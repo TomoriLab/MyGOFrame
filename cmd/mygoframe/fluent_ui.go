@@ -107,6 +107,9 @@ func (application *applicationState) previewStatus(context *ui.Context, compact 
 				ui.Text(context, description).FontSize(14).FontWeight(600)
 			}
 			ui.Text(context, statusSummary(application.status)).FontSize(12).TextColor(appearance.theme.TextMuted)
+			if reason, _ := application.status["fallbackReason"].(string); reason != "" {
+				ui.Text(context, "GPU video unavailable; using CPU processing.").FontSize(12).TextColor(appearance.theme.TextMuted)
+			}
 			if application.notice != "" {
 				ui.Text(context, application.notice).FontSize(12).TextColor(appearance.theme.TextMuted)
 			}

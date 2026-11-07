@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/TomoriLab/MyGOFrame/internal/core"
 	"github.com/egoist/mygo"
@@ -16,38 +19,70 @@ const audioOff = "Off"
 const defaultOutput = "System default"
 
 type applicationState struct {
-	window         *mygo.Window
-	presentation   *presentationWindow
-	closing        bool
-	worker         *captureWorker
-	devices        []core.VideoDevice
-	audioDevices   core.AudioDevices
-	device         string
-	selection      modeSelection
-	colorRange     string
-	audioSource    string
-	audioOutput    string
-	volume         float64
-	muted          bool
-	running        bool
-	busy           bool
-	fullscreen     bool
-	settingsOpen   bool
-	settingsPage   int
-	notice         string
-	errorMessage   string
-	status         map[string]any
-	bitmap         *ui.Bitmap
-	displayedFrame *core.Frame
-	detachedPixels []byte
+	window             *mygo.Window
+	presentation       *presentationWindow
+	closing            bool
+	worker             *captureWorker
+	devices            []core.VideoDevice
+	audioDevices       core.AudioDevices
+	device             string
+	selection          modeSelection
+	colorRange         string
+	videoBackend       string
+	lastVideoConfig    core.VideoConfig
+	audioSource        string
+	audioOutput        string
+	volume             float64
+	muted              bool
+	running            bool
+	busy               bool
+	fullscreen         bool
+	settingsOpen       bool
+	settingsPage       int
+	notice             string
+	errorMessage       string
+	status             map[string]any
+	bitmap             *ui.Bitmap
+	displayedFrame     *core.Frame
+	detachedPixels     []byte
+	gpuImage           *core.GPUImage
+	gpuFailure         error
+	gpuFallbackPending bool
+	gpuMetrics         []core.GPURenderMetrics
+	measureLatency     bool
+	gpuStartedAt       time.Time
+	gpuPendingViews    uint32
 }
 
 func newApplication() *applicationState {
-	return &applicationState{colorRange: "Auto", audioSource: audioOff, audioOutput: defaultOutput, volume: 50}
+	return &applicationState{colorRange: "Auto", videoBackend: "auto", audioSource: audioOff, audioOutput: defaultOutput, volume: 50, measureLatency: os.Getenv("MYGOFRAME_MEASURE_LATENCY") == "1"}
+}
+
+func (application *applicationState) retireGPUImage() {
+	if application.gpuImage != nil {
+		application.gpuImage.Close()
+		metrics := application.gpuImage.Metrics()
+		if remaining := 7200 - len(application.gpuMetrics); remaining > 0 {
+			if len(metrics) > remaining {
+				metrics = metrics[:remaining]
+			}
+			application.gpuMetrics = append(application.gpuMetrics, metrics...)
+		}
+		application.gpuImage = nil
+		application.gpuStartedAt = time.Time{}
+		application.gpuPendingViews = 0
+	}
+	if application.bitmap != nil && application.displayedFrame != nil && application.displayedFrame.IsDMA() {
+		application.bitmap.ReleaseExternal()
+	}
 }
 
 func (application *applicationState) clearPreview() {
+	if application.bitmap != nil {
+		application.bitmap.SetGPUReadyCallback(nil)
+	}
 	application.detachPixels()
+	application.retireGPUImage()
 	application.bitmap = nil
 	previous := application.displayedFrame
 	application.displayedFrame = nil
@@ -58,8 +93,12 @@ func (application *applicationState) clearPreview() {
 // Retained render scenes can outlive a view rebuild, so their image must stop
 // referencing native pixels before the final frame lease is released.
 func (application *applicationState) detachPixels() {
-	if application.bitmap != nil && application.displayedFrame != nil {
-		bounds := application.displayedFrame.UnsafeBorrowedImage().Rect
+	if application.bitmap != nil && application.displayedFrame != nil && !application.displayedFrame.IsDMA() {
+		value := application.displayedFrame.UnsafeBorrowedImage()
+		if value == nil {
+			return
+		}
+		bounds := value.Rect
 		width, height := bounds.Dx(), bounds.Dy()
 		required := width * height * 4
 		if cap(application.detachedPixels) < required {
@@ -73,24 +112,119 @@ func (application *applicationState) detachPixels() {
 	}
 }
 
+func (application *applicationState) trackGPUReady(frame *core.Frame) {
+	if application.bitmap == nil || !application.measureLatency {
+		return
+	}
+	sequence, timestamp := frame.Sequence, frame.TimestampNanoseconds
+	var mutex sync.Mutex
+	seen := make(map[uint64]bool)
+	application.bitmap.SetGPUReadyCallback(func(contextID uint64) {
+		mutex.Lock()
+		defer mutex.Unlock()
+		if !seen[contextID] {
+			seen[contextID] = true
+			core.MarkGPUReady(timestamp, sequence, contextID)
+		}
+	})
+}
+
+func (application *applicationState) processGPUFailure() {
+	if application.gpuImage != nil {
+		if failure := application.gpuImage.TakeError(); failure != nil {
+			application.gpuFailure = failure
+		}
+		if !application.gpuImage.Prepared() {
+			application.gpuPendingViews++
+			if application.gpuPendingViews >= 30 && time.Since(application.gpuStartedAt) >= time.Second {
+				application.gpuFailure = errors.New("the selected renderer cannot prepare DMA-BUF images")
+			}
+		}
+	}
+	if application.gpuFailure == nil || application.worker == nil || application.busy || application.closing {
+		return
+	}
+	configuration := application.lastVideoConfig
+	failure := application.gpuFailure
+	application.gpuFailure = nil
+	if configuration.Path == "" {
+		application.errorMessage = failure.Error()
+		return
+	}
+	configuration.Backend = "cpu"
+	configuration.FallbackReason = failure.Error()
+	application.gpuFallbackPending = true
+	application.clearPreview()
+	application.submit("Switching to CPU video processing…", func(worker *captureWorker) (func(*applicationState), error) {
+		worker.frames.clear()
+		worker.afterSequence = 0
+		err := worker.engine.StartVideo(configuration)
+		return func(application *applicationState) {
+			application.gpuFallbackPending = false
+			application.clearPreview()
+			application.running = err == nil
+		}, err
+	})
+}
+
 func (application *applicationState) takeFrame() {
-	if application.worker == nil {
+	application.processGPUFailure()
+	if application.worker == nil || application.gpuFallbackPending {
 		return
 	}
 	if frame, available := application.worker.frames.take(); available {
+		if application.gpuFailure != nil {
+			frame.Release()
+			return
+		}
 		previous := application.displayedFrame
-		frameImage := frame.UnsafeBorrowedImage()
-		if application.bitmap == nil {
-			application.bitmap = ui.NewBitmap(frameImage)
-		} else {
-			if previous != nil && previous.UnsafeBorrowedImage().Rect != frameImage.Rect {
+		if frame.IsDMA() {
+			width, height := frame.Size()
+			previousWidth, previousHeight := previous.Size()
+			if application.gpuImage == nil || application.bitmap == nil || previousWidth != width || previousHeight != height {
 				application.detachPixels()
+				application.retireGPUImage()
+				application.gpuImage = core.NewGPUImage()
+				application.gpuStartedAt = time.Now()
+				application.gpuPendingViews = 0
+				application.bitmap = ui.NewExternalBitmap(width, height, application.gpuImage)
 			}
-			application.bitmap.Update(frameImage)
+			application.gpuImage.SetFrame(frame)
+			application.bitmap.InvalidateExternal()
+		} else {
+			frameImage := frame.UnsafeBorrowedImage()
+			if frameImage == nil {
+				frame.Release()
+				return
+			}
+			if previous != nil && previous.IsDMA() {
+				application.retireGPUImage()
+				application.bitmap = nil
+			}
+			if application.bitmap == nil {
+				application.bitmap = ui.NewBitmap(frameImage)
+			} else {
+				if previous != nil {
+					previousImage := previous.UnsafeBorrowedImage()
+					if previousImage != nil && previousImage.Rect != frameImage.Rect {
+						application.detachPixels()
+					}
+				}
+				application.bitmap.Update(frameImage)
+			}
 		}
 		application.displayedFrame = frame
+		application.trackGPUReady(frame)
 		previous.Release()
 	}
+}
+
+func (application *applicationState) gpuRenderMetrics() []core.GPURenderMetrics {
+	result := append([]core.GPURenderMetrics(nil), application.gpuMetrics...)
+	if application.gpuImage != nil {
+		result = append(result, application.gpuImage.Metrics()...)
+	}
+	return result
 }
 
 func (application *applicationState) close() {
@@ -188,7 +322,10 @@ func (application *applicationState) startVideo() {
 	if application.colorRange == "Full" {
 		rangeValue = 2
 	}
-	config := core.VideoConfig{Path: path, Mode: mode, ColorRange: rangeValue}
+	config := core.VideoConfig{Path: path, Mode: mode, ColorRange: rangeValue, Backend: application.videoBackend}
+	application.lastVideoConfig = config
+	application.gpuFailure = nil
+	application.gpuFallbackPending = false
 	application.submit("Starting video capture…", func(worker *captureWorker) (func(*applicationState), error) {
 		worker.frames.clear()
 		worker.afterSequence = 0
@@ -198,6 +335,8 @@ func (application *applicationState) startVideo() {
 }
 
 func (application *applicationState) stopVideo() {
+	application.gpuFailure = nil
+	application.gpuFallbackPending = false
 	application.submit("Stopping video capture…", func(worker *captureWorker) (func(*applicationState), error) {
 		worker.engine.StopVideo()
 		worker.frames.clear()
@@ -332,6 +471,9 @@ func (application *applicationState) preview(context *ui.Context) {
 			bitmap := application.bitmap
 			// The video contributes no intrinsic layout size, so capture resolution cannot enlarge the viewport.
 			ui.Box(context).Fill().MinWidth(0).MinHeight(0).Label("Live capture preview").Draw(func(painter *ui.Painter, bounds ui.Rect) {
+				if !application.canPresentFrame(painter) {
+					return
+				}
 				width, height := bitmap.Size()
 				painter.ImageRegion(bitmap, ui.Rect{}, fitVideoRectangle(bounds, width, height), ui.ImageOptions{})
 			})
@@ -344,6 +486,16 @@ func (application *applicationState) preview(context *ui.Context) {
 			ui.Text(context, message).FontSize(14).TextColor(ui.RGB(145, 152, 170))
 		}
 	})
+}
+
+func (application *applicationState) canPresentFrame(painter *ui.Painter) bool {
+	if application.displayedFrame != nil && application.displayedFrame.IsDMA() && !painter.Accelerated() {
+		if time.Since(application.gpuStartedAt) >= 250*time.Millisecond {
+			application.gpuFailure = errors.New("the selected renderer does not provide GPU acceleration")
+		}
+		return false
+	}
+	return true
 }
 
 func fitVideoRectangle(bounds ui.Rect, width, height int) ui.Rect {

@@ -5,6 +5,11 @@ CARGO ?= cargo
 CARGO_FLAGS ?=
 GO_BUILD_FLAGS ?=
 SWIFT_EXTRA_FLAGS ?=
+NATIVE_RUNTIME_FLAGS ?=
+MYGO_GO := GO="$(GO)" python3 tools/go-mygoframe.py
+MYGO_TEXT_OWNERSHIP_TESTS := ^Test(NativeFontsShutdownOwnsEachReference|NativeFontsConcurrentLateCleanup|NativeFontsNormalRetirementBeforeShutdown|ShutdownSerializesPreloadAndStaysClosed|ShutdownWithoutNativeEngine|PangoContextFailureReleasesFontMap|PangoCairoErrorFontIsDestroyed|PangoShutdownReleasesOnlyOwnedResourcesOnce)$$
+MYGO_VARIANT_OWNERSHIP_TESTS := ^TestVariant(ReplyTypeSurvivesSyncCallAndIsReleased|ReplyTypeReleasedOnCallError|PortalSettingsReleasesElementAndReplyTypes|PortalLookupReleasesTypeOnMissingValue|NotificationTypesAndNoUnusedEmptyArray|ShowItemReleasesReply|BusErrorConsumesOnlyFloatingParameters)$$
+MYGO_NATIVE_SHUTDOWN_TESTS := ^TestNativeShutdown(ClosesDisplayOnceAfterClearingContext|RejectsActiveOwners|WithoutDisplayDoesNotInitializeGraphics|WithoutGTKDoesNotLoadLibraries|DisconnectsOwnedSignalsBeforeDisplayClose|BalancesFailedAndMissingSignalOwners)$$
 RUST_TARGET_DIR := $(CURDIR)/build/rust-target
 AUDIO_SOURCE ?=
 export AUDIO_SOURCE
@@ -20,9 +25,15 @@ RUST_SOURCES := $(shell rg --files core/rust -g '*.rs' -g 'Cargo.toml')
 RUST_ASAN := RUSTC_BOOTSTRAP=1 RUSTFLAGS='-Zsanitizer=address -C link-arg=-fuse-ld=lld' CARGO_TARGET_DIR='$(CURDIR)/build/rust-asan-target' ASAN_OPTIONS='detect_leaks=1:halt_on_error=1:abort_on_error=1' LSAN_OPTIONS='exitcode=23:report_objects=1'
 HEADERS := $(wildcard core/include/*)
 
-.PHONY: all core run deb install-desktop test test-race test-sanitize test-thread-sanitize test-audio-integration check-dependencies clean
+.PHONY: all core native-runtime native-inputs run deb install-desktop test test-race test-mygo-ownership test-mygo-ownership-race test-sanitize test-thread-sanitize test-audio-integration test-egl-integration test-font-integration check-dependencies clean
 all: build/mygoframe
 core: build/libmygoframe_core.so
+
+native-inputs:
+	python3 tools/prepare-native-runtime.py --download-only $(NATIVE_RUNTIME_FLAGS)
+
+native-runtime:
+	python3 tools/prepare-native-runtime.py $(NATIVE_RUNTIME_FLAGS)
 
 check-dependencies:
 	@test -n "$(SWIFTC)" || { echo 'Swift 6.0 or newer is required. Set SWIFTC=/path/to/swiftc.'; exit 1; }
@@ -42,8 +53,8 @@ build/libmygoframe_media.so: $(RUST_SOURCES) $(HEADERS) Makefile | build
 build/libmygoframe_core.so: build/libmygoframe_media.so $(SWIFT_SOURCES) $(HEADERS) Makefile | build
 	"$(SWIFTC)" $(SWIFT_FLAGS) $(SWIFT_EXTRA_FLAGS) -emit-library -module-name MyGOFrameCore $(SWIFT_SOURCES) -L build -lmygoframe_media -Xlinker -rpath -Xlinker '$$ORIGIN' -o $@
 
-build/mygoframe: build/libmygoframe_core.so $(shell rg --files cmd internal -g '*.go' -g '*.png') go.mod go.sum
-	CGO_ENABLED=1 $(GO) build -trimpath $(GO_BUILD_FLAGS) -o $@ ./cmd/mygoframe
+build/mygoframe: build/libmygoframe_core.so $(shell rg --files cmd internal -g '*.go' -g '*.png') tools/prepare-mygo.py tools/go-mygoframe.py $(wildcard patches/mygo/*.patch) go.mod go.sum | native-runtime
+	CGO_ENABLED=1 $(MYGO_GO) build -trimpath $(GO_BUILD_FLAGS) -o $@ ./cmd/mygoframe
 
 run: all
 	./build/mygoframe
@@ -63,16 +74,27 @@ build/video-tests: $(CORE_TEST_SOURCES) tests/video_tests.swift $(HEADERS) Makef
 build/audio-tests: $(CORE_TEST_SOURCES) tests/audio_tests.swift $(HEADERS) Makefile | build
 	"$(SWIFTC)" $(SWIFT_FLAGS) $(CORE_TEST_SOURCES) tests/audio_tests.swift $(NATIVE_LIBS) -o $@
 
-test: all build/pool-tests build/video-tests build/audio-tests
+test: all build/pool-tests build/video-tests build/audio-tests test-mygo-ownership
+	python3 -m unittest discover -s tests -p 'test_*.py'
 	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" $(CARGO) test --manifest-path core/rust/Cargo.toml
 	./build/pool-tests
 	./build/video-tests
 	./build/audio-tests
-	LD_LIBRARY_PATH="$(CURDIR)/build:$${LD_LIBRARY_PATH:-}" CGO_ENABLED=1 $(GO) test ./...
+	LD_LIBRARY_PATH="$(CURDIR)/build:$${LD_LIBRARY_PATH:-}" CGO_ENABLED=1 $(MYGO_GO) test ./...
 
-test-race: all
-	LD_LIBRARY_PATH="$(CURDIR)/build:$${LD_LIBRARY_PATH:-}" CGO_ENABLED=1 $(GO) test -race ./...
-	$(GO) vet ./...
+test-race: all test-mygo-ownership-race
+	LD_LIBRARY_PATH="$(CURDIR)/build:$${LD_LIBRARY_PATH:-}" CGO_ENABLED=1 $(MYGO_GO) test -race ./...
+	$(MYGO_GO) vet ./...
+
+test-mygo-ownership:
+	CGO_ENABLED=0 $(MYGO_GO) test github.com/egoist/mygo/internal/text -run '$(MYGO_TEXT_OWNERSHIP_TESTS)' -count=1
+	CGO_ENABLED=0 $(MYGO_GO) test github.com/egoist/mygo/internal/linux -run '$(MYGO_VARIANT_OWNERSHIP_TESTS)' -count=1
+	CGO_ENABLED=0 $(MYGO_GO) test github.com/egoist/mygo/internal/linux -run '$(MYGO_NATIVE_SHUTDOWN_TESTS)' -count=1
+
+test-mygo-ownership-race:
+	CGO_ENABLED=1 $(MYGO_GO) test -race github.com/egoist/mygo/internal/text -run '$(MYGO_TEXT_OWNERSHIP_TESTS)' -count=1
+	CGO_ENABLED=1 $(MYGO_GO) test -race github.com/egoist/mygo/internal/linux -run '$(MYGO_VARIANT_OWNERSHIP_TESTS)' -count=1
+	CGO_ENABLED=1 $(MYGO_GO) test -race github.com/egoist/mygo/internal/linux -run '$(MYGO_NATIVE_SHUTDOWN_TESTS)' -count=1
 
 build/video-sanitize: $(CORE_TEST_SOURCES) tests/video_tests.swift $(HEADERS) Makefile | build
 	"$(SWIFTC)" $(SWIFT_FLAGS) -sanitize=address $(CORE_TEST_SOURCES) tests/video_tests.swift $(NATIVE_LIBS) -o build/video-sanitize
@@ -84,6 +106,12 @@ test-sanitize: build/video-sanitize build/audio-sanitize
 	./build/video-sanitize
 	./build/audio-sanitize
 	$(RUST_ASAN) $(CARGO) test --manifest-path core/rust/Cargo.toml --offline --lib
+
+test-egl-integration:
+	python3 tools/validate-egl-lifecycle.py --output build/egl-lifecycle.json
+
+test-font-integration:
+	python3 tools/validate-font-memory.py --output build/font-memory.json
 
 test-audio-integration: build/audio-sanitize
 	./build/audio-sanitize --integration

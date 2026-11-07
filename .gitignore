@@ -1,4 +1,5 @@
 /build/
+/native-inputs/
 /core/rust/target/
 /work/
 *.core

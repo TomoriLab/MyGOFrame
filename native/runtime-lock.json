@@ -1,0 +1,139 @@
+{
+  "gtkModuleBuild": {
+    "patches": [
+      {
+        "file": "native/patches/kde-gtk-config-6.8.2-module-owners.patch",
+        "sha256": "85a328eb1683c8a25507f5f2a5d808f44e6ec9fba6f31d9146ef0d5924c9d41a"
+      }
+    ],
+    "source": {
+      "archive": "kde-gtk-config-6.8.2.tar.xz",
+      "directory": "kde-gtk-config-6.8.2",
+      "sha256": "883a7c5f2491c180d0ce2631217d20ca450fe6ad1587a2cfa271a51a100cd638",
+      "url": "https://download.kde.org/stable/plasma/6.8.2/kde-gtk-config-6.8.2.tar.xz"
+    },
+    "version": "6.8.2"
+  },
+  "gtkModules": {
+    "colorreload": {
+      "buildOwner": "kdeGtkModules",
+      "builtLibrary": "libcolorreload-gtk-module.so",
+      "exportsCount": 2,
+      "exportsSha256": "8a3310fe1fc5f63441e2d4d5fe1e72f6728805cd8cd2e3b196259979f0085d9e",
+      "file": "gtk-3.0/modules/libcolorreload-gtk-module.so",
+      "sourceFile": "color-reload-module/reloader.c",
+      "version": "6.8.2"
+    },
+    "windowDecorations": {
+      "buildOwner": "kdeGtkModules",
+      "builtLibrary": "libwindow-decorations-gtk-module.so",
+      "exportsCount": 2,
+      "exportsSha256": "8a3310fe1fc5f63441e2d4d5fe1e72f6728805cd8cd2e3b196259979f0085d9e",
+      "file": "gtk-3.0/modules/libwindow-decorations-gtk-module.so",
+      "sourceFile": "window-decorations-reload-module/reloader.c",
+      "version": "6.8.2"
+    }
+  },
+  "libraries": {
+    "fcitx": {
+      "builtLibrary": "fcitx-gclient/libFcitx5GClient.so.5.1.7",
+      "cmakeOptions": {
+        "ENABLE_GIR": "OFF",
+        "ENABLE_GTK2_IM_MODULE": "OFF",
+        "ENABLE_GTK3_IM_MODULE": "OFF",
+        "ENABLE_GTK4_IM_MODULE": "OFF"
+      },
+      "exportsCount": 29,
+      "exportsSha256": "069e759c75b5c0589f515c67050ed179a35bf273e7eedd4191054653563fc41c",
+      "patches": [
+        {
+          "file": "native/patches/fcitx-5.1.7-node-owners.patch",
+          "sha256": "77906210bb2ed8540a7bb11acf9fb6379e71f5196ea430515396d19aa52ee9b4"
+        }
+      ],
+      "soname": "libFcitx5GClient.so.2",
+      "source": {
+        "archive": "fcitx5-gtk_5.1.7.orig.tar.xz",
+        "directory": "fcitx5-gtk-5.1.7",
+        "sha256": "02ceabeb6c89e69b095b77a52568101aada5b0034ff0ba77b2eaef9b6d800657",
+        "url": "https://deb.debian.org/debian/pool/main/f/fcitx5-gtk/fcitx5-gtk_5.1.7.orig.tar.xz"
+      },
+      "version": "5.1.7"
+    },
+    "gdk": {
+      "buildTarget": "gdk/libgdk-3.so.0.2420.32",
+      "builtLibrary": "gdk/libgdk-3.so.0.2420.32",
+      "exportsCount": 761,
+      "exportsSha256": "1509fe68fe5c04b1b9b24703679dbb56de2a7c46ed93d44451680b29171542f4",
+      "mesonOptions": {
+        "broadway_backend": "true",
+        "buildtype": "debugoptimized",
+        "cloudproviders": "false",
+        "colord": "no",
+        "default_library": "shared",
+        "demos": "false",
+        "examples": "false",
+        "gtk_doc": "false",
+        "installed_tests": "false",
+        "introspection": "false",
+        "man": "false",
+        "print_backends": "file",
+        "profiler": "false",
+        "tests": "false",
+        "tracker3": "false",
+        "wayland_backend": "true",
+        "x11_backend": "true"
+      },
+      "patches": [
+        {
+          "file": "native/patches/gtk-debian-016_no_offscreen_widgets_grabbing.patch",
+          "origin": {
+            "archive": "gtk+3.0_3.24.52-3.debian.tar.xz",
+            "sha256": "9daf6c295c2b1717c56e33660d78d1c84154a75693b087536dd4472f0c7c82d1",
+            "sourcePackage": "gtk+3.0",
+            "sourceVersion": "3.24.52-3",
+            "url": "https://deb.debian.org/debian/pool/main/g/gtk+3.0/gtk+3.0_3.24.52-3.debian.tar.xz"
+          },
+          "sha256": "b2807023295419f93d57d927fa610a9a18ab35f1fe23e460c795a34b4dc6887b"
+        },
+        {
+          "file": "native/patches/gtk-debian-017_no_offscreen_device_grabbing.patch",
+          "origin": {
+            "archive": "gtk+3.0_3.24.52-3.debian.tar.xz",
+            "sha256": "9daf6c295c2b1717c56e33660d78d1c84154a75693b087536dd4472f0c7c82d1",
+            "sourcePackage": "gtk+3.0",
+            "sourceVersion": "3.24.52-3",
+            "url": "https://deb.debian.org/debian/pool/main/g/gtk+3.0/gtk+3.0_3.24.52-3.debian.tar.xz"
+          },
+          "sha256": "b849e3138f2fb288e4a982135de9c3c787f31d3f77b8d4714a20945b2b7b3a89"
+        },
+        {
+          "file": "native/patches/gdk-3.24.52-owners.patch",
+          "sha256": "1b3507dc23d17060cfca3d9c9f431b142679382ed4568146cf3e13adb2953810"
+        },
+        {
+          "file": "native/patches/gtk-3.24.52-settings-owners.patch",
+          "sha256": "21ea35938391e2f0eafb6c2e47c86715646d40513d0e17e2304e168718a9404f"
+        }
+      ],
+      "soname": "libgdk-3.so.0",
+      "source": {
+        "archive": "gtk+3.0_3.24.52.orig.tar.xz",
+        "directory": "gtk-3.24.52",
+        "sha256": "80931fa472a77b9a164f6740e3c0b444fac6770054632d35a7ff9d679e5e7b9f",
+        "url": "https://deb.debian.org/debian/pool/main/g/gtk+3.0/gtk+3.0_3.24.52.orig.tar.xz"
+      },
+      "version": "3.24.52"
+    },
+    "gtk": {
+      "buildOwner": "gdk",
+      "buildTarget": "gtk/libgtk-3.so.0.2420.32",
+      "builtLibrary": "gtk/libgtk-3.so.0.2420.32",
+      "exportsCount": 4571,
+      "exportsSha256": "0aaf40eef389fccff05822890e3b5a2c7e30ca1f9f7e5c089cc3252398460249",
+      "soname": "libgtk-3.so.0",
+      "version": "3.24.52"
+    }
+  },
+  "schemaVersion": 1
+}

@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/draw"
 	"sync"
+	"unsafe"
 )
 
 type VideoDevice struct {
@@ -42,9 +43,11 @@ type AudioDevices struct {
 }
 
 type VideoConfig struct {
-	Path       string
-	Mode       VideoMode
-	ColorRange int32
+	Path           string
+	Mode           VideoMode
+	ColorRange     int32
+	Backend        string
+	FallbackReason string
 }
 
 func FourCC(value string) (uint32, error) {
@@ -60,25 +63,54 @@ func FourCC(value string) (uint32, error) {
 }
 
 type frameState struct {
-	mutex   sync.RWMutex
-	once    sync.Once
-	image   *image.RGBA
-	release func()
+	mutex    sync.RWMutex
+	once     sync.Once
+	image    *image.RGBA
+	dmaToken unsafe.Pointer
+	isDMA    bool
+	release  func()
 }
 
 // Frame shares its native lease state across value copies.
 type Frame struct {
 	Sequence             uint64
 	TimestampNanoseconds uint64
+	width                int
+	height               int
 	state                *frameState
 }
 
 func newFrame(value *image.RGBA, sequence, timestampNanoseconds uint64, release func()) *Frame {
-	return &Frame{
+	frame := &Frame{
 		Sequence:             sequence,
 		TimestampNanoseconds: timestampNanoseconds,
 		state:                &frameState{image: value, release: release},
 	}
+	if value != nil {
+		frame.width, frame.height = value.Rect.Dx(), value.Rect.Dy()
+	}
+	return frame
+}
+
+func newDMAFrame(token unsafe.Pointer, width, height int, sequence, timestampNanoseconds uint64, release func()) *Frame {
+	return &Frame{
+		Sequence: sequence, TimestampNanoseconds: timestampNanoseconds,
+		width: width, height: height,
+		state: &frameState{dmaToken: token, isDMA: true, release: release},
+	}
+}
+
+// IsDMA reports whether this frame uses an opaque DMA-BUF lease instead of CPU pixels.
+func (frame *Frame) IsDMA() bool {
+	return frame != nil && frame.state != nil && frame.state.isDMA
+}
+
+// Size returns immutable frame dimensions independently of its release state.
+func (frame *Frame) Size() (int, int) {
+	if frame == nil {
+		return 0, 0
+	}
+	return frame.width, frame.height
 }
 
 // NewImageFrame wraps a Go-owned image without a native release operation.
@@ -102,7 +134,8 @@ func (frame *Frame) UnsafeBorrowedImage() *image.RGBA {
 	return frame.state.image
 }
 
-// CopyImage returns Go-owned pixels that remain valid after Release.
+// CopyImage returns Go-owned CPU pixels that remain valid after Release.
+// DMA-BUF frames have no CPU image and return nil.
 func (frame *Frame) CopyImage() *image.RGBA {
 	if frame == nil || frame.state == nil {
 		return nil
@@ -127,6 +160,7 @@ func (frame *Frame) Release() {
 		state.mutex.Lock()
 		release := state.release
 		state.release = nil
+		state.dmaToken = nil
 		if state.image != nil {
 			state.image.Pix = nil
 			state.image = nil

@@ -20,18 +20,23 @@ override_dh_auto_configure:
 	python3 debian/prepare-build.py
 
 override_dh_auto_build:
-	$(MAKE) CARGO_FLAGS='--offline --locked' GO_BUILD_FLAGS='-buildmode=pie -buildvcs=false' SWIFT_EXTRA_FLAGS='-static-stdlib -use-ld=lld -debug-prefix-map $(CURDIR)=. -Xlinker -z -Xlinker relro -Xlinker -z -Xlinker now'
+	$(MAKE) NATIVE_RUNTIME_FLAGS='--offline' CARGO_FLAGS='--offline --locked' GO_BUILD_FLAGS='-buildmode=pie -buildvcs=false' SWIFT_EXTRA_FLAGS='-static-stdlib -use-ld=lld -debug-prefix-map $(CURDIR)=. -Xlinker -z -Xlinker relro -Xlinker -z -Xlinker now'
 	go run ./tools/package-assets --output build/mygoframe.png
 
 override_dh_auto_test:
 ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
-	$(MAKE) test CARGO_FLAGS='--offline --locked' GO_BUILD_FLAGS='-buildmode=pie -buildvcs=false' SWIFT_EXTRA_FLAGS='-static-stdlib'
+	$(MAKE) test NATIVE_RUNTIME_FLAGS='--offline' CARGO_FLAGS='--offline --locked' GO_BUILD_FLAGS='-buildmode=pie -buildvcs=false' SWIFT_EXTRA_FLAGS='-static-stdlib'
 endif
 
 override_dh_auto_install:
 	install -D -m755 build/mygoframe debian/mygoframe/usr/bin/mygoframe
 	install -D -m644 build/libmygoframe_core.so debian/mygoframe/usr/lib/$(DEB_HOST_MULTIARCH)/mygoframe/libmygoframe_core.so
 	install -D -m644 build/libmygoframe_media.so debian/mygoframe/usr/lib/$(DEB_HOST_MULTIARCH)/mygoframe/libmygoframe_media.so
+	install -d debian/mygoframe/usr/lib/$(DEB_HOST_MULTIARCH)/mygoframe/native
+	install -m644 build/native-runtime/libgtk-3.so.0 build/native-runtime/libgdk-3.so.0 build/native-runtime/libFcitx5GClient.so.2 build/native-runtime/manifest.json debian/mygoframe/usr/lib/$(DEB_HOST_MULTIARCH)/mygoframe/native/
+	if test -d build/native-runtime/gtk-3.0; then cp -a build/native-runtime/gtk-3.0 debian/mygoframe/usr/lib/$(DEB_HOST_MULTIARCH)/mygoframe/native/; fi
+	install -d debian/mygoframe/usr/share/doc/mygoframe
+	cp -a build/native-runtime-source debian/mygoframe/usr/share/doc/mygoframe/native-source
 	patchelf --set-rpath '$$ORIGIN/../lib/$(DEB_HOST_MULTIARCH)/mygoframe' debian/mygoframe/usr/bin/mygoframe
 	patchelf --set-rpath '$$ORIGIN' debian/mygoframe/usr/lib/$(DEB_HOST_MULTIARCH)/mygoframe/libmygoframe_core.so
 	install -D -m644 debian/mygoframe.desktop debian/mygoframe/usr/share/applications/mygoframe.desktop
@@ -39,7 +44,17 @@ override_dh_auto_install:
 	install -D -m644 build/mygoframe.png debian/mygoframe/usr/share/icons/hicolor/512x512/apps/mygoframe.png
 
 override_dh_shlibdeps:
-	dh_shlibdeps -l$(CURDIR)/debian/mygoframe/usr/lib/$(DEB_HOST_MULTIARCH)/mygoframe
+	dh_shlibdeps -l$(CURDIR)/debian/mygoframe/usr/lib/$(DEB_HOST_MULTIARCH)/mygoframe:$(CURDIR)/debian/mygoframe/usr/lib/$(DEB_HOST_MULTIARCH)/mygoframe/native
+
+override_dh_makeshlibs:
+	dh_makeshlibs -Xusr/lib/$(DEB_HOST_MULTIARCH)/mygoframe
+
+override_dh_strip:
+	dh_strip
+	python3 tools/prepare-native-runtime.py --refresh-manifest debian/mygoframe/usr/lib/$(DEB_HOST_MULTIARCH)/mygoframe/native
+
+override_dh_compress:
+	dh_compress -Xusr/share/doc/mygoframe/native-source
 
 override_dh_gencontrol:
 	dh_gencontrol -- -Vmisc:Static-Built-Using="$$(cat debian/go-static-built-using)"

@@ -48,11 +48,11 @@ const fn read_ioctl<T>(number: u64) -> u64 {
     ioctl_request(2, number, std::mem::size_of::<T>())
 }
 
-const fn write_ioctl<T>(number: u64) -> u64 {
+pub(crate) const fn write_ioctl<T>(number: u64) -> u64 {
     ioctl_request(1, number, std::mem::size_of::<T>())
 }
 
-const fn read_write_ioctl<T>(number: u64) -> u64 {
+pub(crate) const fn read_write_ioctl<T>(number: u64) -> u64 {
     ioctl_request(3, number, std::mem::size_of::<T>())
 }
 
@@ -70,11 +70,11 @@ const SET_PARAMETERS: u64 = read_write_ioctl::<ffi::v4l2_streamparm>(22);
 const ENUMERATE_SIZES: u64 = read_write_ioctl::<ffi::v4l2_frmsizeenum>(74);
 const ENUMERATE_INTERVALS: u64 = read_write_ioctl::<ffi::v4l2_frmivalenum>(75);
 
-fn last_os_error(operation: &str) -> String {
+pub(crate) fn last_os_error(operation: &str) -> String {
     format!("{operation}: {}", std::io::Error::last_os_error())
 }
 
-fn checked_ioctl<T>(
+pub(crate) fn checked_ioctl<T>(
     descriptor: i32,
     request: u64,
     value: &mut T,
@@ -92,7 +92,7 @@ fn checked_ioctl<T>(
     }
 }
 
-fn try_ioctl<T>(descriptor: i32, request: u64, value: &mut T) -> Result<(), i32> {
+pub(crate) fn try_ioctl<T>(descriptor: i32, request: u64, value: &mut T) -> Result<(), i32> {
     loop {
         let result = unsafe { ffi::ioctl(descriptor, request, value as *mut T) };
         if result >= 0 {
@@ -105,13 +105,13 @@ fn try_ioctl<T>(descriptor: i32, request: u64, value: &mut T) -> Result<(), i32>
     }
 }
 
-struct VideoFile {
+pub(crate) struct VideoFile {
     file: File,
     name: String,
 }
 
 impl VideoFile {
-    fn open(path: &str) -> Result<Self, String> {
+    pub(crate) fn open(path: &str) -> Result<Self, String> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -145,14 +145,14 @@ impl VideoFile {
         Ok(Self { file, name })
     }
 
-    fn descriptor(&self) -> i32 {
+    pub(crate) fn descriptor(&self) -> i32 {
         self.file.as_raw_fd()
     }
 }
 
-struct MappedBuffer {
-    pointer: *mut u8,
-    length: usize,
+pub(crate) struct MappedBuffer {
+    pub(crate) pointer: *mut u8,
+    pub(crate) length: usize,
 }
 
 // A dequeued V4L2 buffer is moved to one capture thread and unmapped after that thread stops.
@@ -211,7 +211,7 @@ struct FramePool {
     byte_length: usize,
 }
 
-fn frame_layout(width: u32, height: u32) -> Option<(u32, usize)> {
+pub(crate) fn frame_layout(width: u32, height: u32) -> Option<(u32, usize)> {
     if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
         return None;
     }
@@ -681,6 +681,27 @@ impl PixelConverter {
     }
 }
 
+pub(crate) fn dma_reference_rgba(
+    view: &ffi::mgfr_dma_frame_view,
+    source: &[u8],
+    destination: &mut [u8],
+) -> Result<(), String> {
+    let mut converter = PixelConverter::new(PixelConfiguration {
+        fourcc: NV12,
+        width: view.width,
+        height: view.height,
+        bytes_per_line: view.stride,
+        quantization: 0,
+        encoding: view.encoding,
+        colorspace: view.colorspace,
+        color_range: view.color_range,
+    })?;
+    match converter.convert(source, view.byte_length, destination)? {
+        Conversion::Converted => Ok(()),
+        Conversion::Discarded(message) => Err(message),
+    }
+}
+
 fn decoder_failure(operation: &str, code: i32) -> Result<Conversion, String> {
     let message = format!("{operation}: {}", ffmpeg_error(code));
     if code == AVERROR_INVALIDDATA || code == -EAGAIN || code == AVERROR_EOF {
@@ -690,7 +711,7 @@ fn decoder_failure(operation: &str, code: i32) -> Result<Conversion, String> {
     }
 }
 
-fn capture_buffer(index: u32) -> ffi::v4l2_buffer {
+pub(crate) fn capture_buffer(index: u32) -> ffi::v4l2_buffer {
     let mut buffer: ffi::v4l2_buffer = unsafe { std::mem::zeroed() };
     buffer.index = index;
     buffer.type_ = CAPTURE_TYPE;

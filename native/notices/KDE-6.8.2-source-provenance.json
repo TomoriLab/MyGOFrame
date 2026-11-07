@@ -1,0 +1,13 @@
+{
+  "archive": "kde-gtk-config-6.8.2.tar.xz",
+  "moduleCopyright": {
+    "color-reload-module/reloader.c": "2020 Carson Black <uhhadd@gmail.com>",
+    "window-decorations-reload-module/reloader.c": "2020 Mikhail Zolotukhin <zomial@protonmail.com>"
+  },
+  "moduleLicense": "GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL",
+  "sha256": "883a7c5f2491c180d0ce2631217d20ca450fe6ad1587a2cfa271a51a100cd638",
+  "signatureVerified": true,
+  "sourcePackage": "kde-gtk-config",
+  "upstreamUrl": "https://download.kde.org/stable/plasma/6.8.2/kde-gtk-config-6.8.2.tar.xz",
+  "version": "6.8.2"
+}

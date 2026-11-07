@@ -2,6 +2,19 @@
 
 Read [Architecture and memory ownership](architecture.md) before changing the Go, Swift, or Rust boundaries. Use [Verification](verification.md) to select checks for the affected behavior. Use [Debian packaging](debian.md) to build and validate local Debian packages. The root [README](../README.md) documents installation and application use.
 
+## Renderer integration
+
+- [MyGo renderer patch](mygo-renderer.md): build-local extension, sparse vendor overlay, and context-bound external images.
+- [NVIDIA EGL allocation leaks](egl-leaks.md): native root-cause controls, version-limited compatibility, and unsuppressed sanitizer verification.
+- [Native text ownership](font-memory.md): terminal Pango cleanup, transient GLib ownership, and Fontconfig relative-offset reports.
+- [Native display and input-method ownership](native-memory.md): GDK/EGL, Wayland/Cairo, and Fcitx repairs with unsuppressed GUI checks.
+- [Application-private native runtime build](native-runtime-build.md): pinned sources, ABI validation, startup selection, and Debian integration.
+
+## Research
+
+- [DMA-BUF feasibility](dmabuf-research.md): actual capture-to-GPU import results, renderer requirements, and buffer lifetime design.
+- [DMA-BUF color validation](dmabuf-color-validation.md): production color comparisons, source cache-coherency diagnosis, and measured limits.
+
 ## Source layout
 
 | Area | Location |

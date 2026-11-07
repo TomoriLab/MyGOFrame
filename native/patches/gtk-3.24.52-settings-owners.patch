@@ -1,0 +1,45 @@
+--- a/gtk/gtksettings.c
++++ b/gtk/gtksettings.c
+@@ -1990,8 +1990,9 @@
+   v.display = display;
+   v.settings = settings;
+   display_settings = g_array_append_val (display_settings, v);
+-  g_signal_connect (display, "closed",
+-                    G_CALLBACK (settings_display_closed), NULL);
++  /* Display clients still use existing settings while retiring their widgets. */
++  g_signal_connect_after (display, "closed",
++                          G_CALLBACK (settings_display_closed), NULL);
+ 
+   settings_init_style (settings);
+   settings_update_xsettings (settings);
+@@ -2011,19 +2012,22 @@
+   DisplaySettings *ds;
+   int i;
+ 
+-  /* If the display is closed, we don't want to recreate the settings! */
++  if (display_settings != NULL)
++    {
++      ds = (DisplaySettings *)display_settings->data;
++      for (i = 0; i < display_settings->len; i++)
++        {
++          if (ds[i].display == display)
++            return ds[i].settings;
++        }
++    }
++
++  /* Existing settings remain valid during close, but a closed display cannot create them. */
+   if G_UNLIKELY (gdk_display_is_closed (display))
+     return NULL;
+ 
+   if G_UNLIKELY (display_settings == NULL)
+     display_settings = g_array_new (FALSE, TRUE, sizeof (DisplaySettings));
+-
+-  ds = (DisplaySettings *)display_settings->data;
+-  for (i = 0; i < display_settings->len; i++)
+-    {
+-      if (ds[i].display == display)
+-        return ds[i].settings;
+-    }
+ 
+   return gtk_settings_create_for_display (display);
+ }

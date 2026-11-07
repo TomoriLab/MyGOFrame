@@ -1,0 +1,183 @@
+--- a/color-reload-module/reloader.c
++++ b/color-reload-module/reloader.c
+@@ -8,23 +8,28 @@
+ #include <glib.h>
+ #include <gio/gio.h>
+ #include <gdk/gdk.h>
++#include <gmodule.h>
+ 
+ gchar *path;
+ GFile *file;
+ GFileMonitor *mon;
+ GtkCssProvider *provider;
++static GdkScreen *provider_screen;
+ 
+ void reload_colours() {
++    if (provider_screen == NULL) {
++        return;
++    }
+     if (provider != NULL) {
+         gtk_style_context_remove_provider_for_screen(
+-            gdk_screen_get_default(),
++            provider_screen,
+             GTK_STYLE_PROVIDER(provider)
+         );
+         g_clear_object(&provider);
+     }
+     provider = gtk_css_provider_new();
+     gtk_style_context_add_provider_for_screen(
+-        gdk_screen_get_default(),
++        provider_screen,
+         GTK_STYLE_PROVIDER (provider),
+         GTK_STYLE_PROVIDER_PRIORITY_USER+1
+     );
+@@ -36,6 +41,13 @@
+ }
+ 
+ __attribute__((visibility("default"))) void gtk_module_init(gint *argc, gchar ***argv[]) {
++    if (file != NULL) {
++        return;
++    }
++    provider_screen = gdk_screen_get_default();
++    if (provider_screen != NULL) {
++        g_object_ref(provider_screen);
++    }
+     path = g_strconcat(g_get_user_config_dir(), "/gtk-3.0/colors.css", NULL);
+     file = g_file_new_for_path(path);
+ 
+@@ -46,5 +58,23 @@
+         NULL
+     );
+ 
+-    g_signal_connect(mon, "changed", G_CALLBACK(reload_colours), NULL);
++    if (mon != NULL) {
++        g_signal_connect(mon, "changed", G_CALLBACK(reload_colours), NULL);
++    }
+ }
++
++__attribute__((visibility("default"))) void g_module_unload(GModule *module) {
++    (void)module;
++    if (mon != NULL) {
++        g_signal_handlers_disconnect_by_func(mon, G_CALLBACK(reload_colours), NULL);
++        g_file_monitor_cancel(mon);
++        g_clear_object(&mon);
++    }
++    if (provider != NULL) {
++        gtk_style_context_remove_provider_for_screen(provider_screen, GTK_STYLE_PROVIDER(provider));
++        g_clear_object(&provider);
++    }
++    g_clear_object(&file);
++    g_clear_pointer(&path, g_free);
++    g_clear_object(&provider_screen);
++}
+--- a/window-decorations-reload-module/reloader.c
++++ b/window-decorations-reload-module/reloader.c
+@@ -8,6 +8,7 @@
+ #include <gio/gio.h>
+ #include <glib.h>
+ #include <gtk/gtk.h>
++#include <gmodule.h>
+ 
+ #define UNUSED(x) (void)(x)
+ 
+@@ -17,6 +18,8 @@
+ GFileMonitor *window_decorations_css_monitor;
+ 
+ GtkCssProvider *css_provider;
++static GdkScreen *provider_screen;
++static GtkSettings *theme_settings;
+ 
+ void manage_css_provider(GFileMonitor *monitor, GFile *file, GFile *other_file, GFileMonitorEvent event_type, gpointer user_data);
+ void reload_css_provider();
+@@ -29,6 +32,14 @@
+     UNUSED(argc);
+     UNUSED(argv);
+ 
++    if (window_decorations_css_file != NULL) {
++        return;
++    }
++    provider_screen = gdk_screen_get_default();
++    if (provider_screen != NULL) {
++        g_object_ref(provider_screen);
++    }
++
+     window_decorations_css_path = g_strconcat(g_get_user_config_dir(), "/gtk-3.0/window_decorations.css", NULL);
+     window_decorations_css_file = g_file_new_for_path(window_decorations_css_path);
+ 
+@@ -36,8 +47,15 @@
+ 
+     css_provider = NULL;
+ 
+-    g_signal_connect(window_decorations_css_monitor, "changed", G_CALLBACK(manage_css_provider), NULL);
+-    g_signal_connect(gtk_settings_get_default(), "notify::gtk-theme-name", G_CALLBACK(theme_changed), NULL);
++    if (window_decorations_css_monitor != NULL) {
++        g_signal_connect(window_decorations_css_monitor, "changed", G_CALLBACK(manage_css_provider), NULL);
++    }
++    theme_settings = gtk_settings_get_default();
++    if (theme_settings != NULL) {
++        /* A weak settings pointer avoids a module/settings ownership cycle. */
++        g_object_add_weak_pointer(G_OBJECT(theme_settings), (gpointer *)&theme_settings);
++        g_signal_connect(theme_settings, "notify::gtk-theme-name", G_CALLBACK(theme_changed), NULL);
++    }
+ 
+     reload_css_provider();
+ }
+@@ -60,13 +78,13 @@
+ {
+     remove_css_provider();
+ 
+-    if (!theme_is_breeze()) {
++    if (provider_screen == NULL || !theme_is_breeze()) {
+         return;
+     }
+ 
+     css_provider = gtk_css_provider_new();
+ 
+-    gtk_style_context_add_provider_for_screen(gdk_screen_get_default(), GTK_STYLE_PROVIDER(css_provider), GTK_STYLE_PROVIDER_PRIORITY_USER + 1);
++    gtk_style_context_add_provider_for_screen(provider_screen, GTK_STYLE_PROVIDER(css_provider), GTK_STYLE_PROVIDER_PRIORITY_USER + 1);
+     if (g_file_query_exists(window_decorations_css_file, NULL)) {
+         gtk_css_provider_load_from_file(css_provider, window_decorations_css_file, NULL);
+     }
+@@ -77,14 +95,17 @@
+     if (!css_provider) {
+         return;
+     }
+-    gtk_style_context_remove_provider_for_screen(gdk_screen_get_default(), GTK_STYLE_PROVIDER(css_provider));
++    gtk_style_context_remove_provider_for_screen(provider_screen, GTK_STYLE_PROVIDER(css_provider));
+     g_clear_object(&css_provider);
+ }
+ 
+ int theme_is_breeze()
+ {
+-    GtkSettings *settings = gtk_settings_get_default();
++    GtkSettings *settings = theme_settings;
+     char *theme_name = NULL;
++    if (settings == NULL) {
++        return 0;
++    }
+     g_object_get(settings, "gtk-theme-name", &theme_name, NULL);
+     if (!theme_name) {
+         return 0;
+@@ -101,3 +122,22 @@
+     UNUSED(user_data);
+     reload_css_provider();
+ }
++
++__attribute__((visibility("default"))) void g_module_unload(GModule *module)
++{
++    UNUSED(module);
++    if (window_decorations_css_monitor != NULL) {
++        g_signal_handlers_disconnect_by_func(window_decorations_css_monitor, G_CALLBACK(manage_css_provider), NULL);
++        g_file_monitor_cancel(window_decorations_css_monitor);
++        g_clear_object(&window_decorations_css_monitor);
++    }
++    if (theme_settings != NULL) {
++        g_signal_handlers_disconnect_by_func(theme_settings, G_CALLBACK(theme_changed), NULL);
++        g_object_remove_weak_pointer(G_OBJECT(theme_settings), (gpointer *)&theme_settings);
++        theme_settings = NULL;
++    }
++    remove_css_provider();
++    g_clear_object(&window_decorations_css_file);
++    g_clear_pointer(&window_decorations_css_path, g_free);
++    g_clear_object(&provider_screen);
++}

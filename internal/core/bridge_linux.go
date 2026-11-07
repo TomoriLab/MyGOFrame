@@ -117,7 +117,19 @@ func (engine *Engine) StartVideo(config VideoConfig) error {
 	path := C.CString(config.Path)
 	defer C.free(unsafe.Pointer(path))
 	mode := config.Mode
-	return takeError(C.mgf_start_video(state.handle, path, C.uint32_t(mode.FourCC), C.uint32_t(mode.Width), C.uint32_t(mode.Height), C.uint32_t(mode.IntervalNumerator), C.uint32_t(mode.IntervalDenominator), C.int32_t(config.ColorRange)))
+	backend := C.int32_t(0)
+	switch config.Backend {
+	case "", "auto":
+	case "cpu":
+		backend = 1
+	case "dma", "dmabuf":
+		backend = 2
+	default:
+		return fmt.Errorf("unsupported video backend: %s", config.Backend)
+	}
+	fallback := C.CString(config.FallbackReason)
+	defer C.free(unsafe.Pointer(fallback))
+	return takeError(C.mgf_start_video_backend(state.handle, path, C.uint32_t(mode.FourCC), C.uint32_t(mode.Width), C.uint32_t(mode.Height), C.uint32_t(mode.IntervalNumerator), C.uint32_t(mode.IntervalDenominator), C.int32_t(config.ColorRange), backend, fallback))
 }
 
 func (engine *Engine) StopVideo() {
@@ -200,6 +212,28 @@ func (engine *Engine) AcquireFrame(afterSequence uint64) (*Frame, error) {
 	defer state.mutex.Unlock()
 	if state.handle == nil {
 		return nil, nil
+	}
+	var dmaView C.mgfr_dma_frame_view
+	dmaAvailable := C.mgf_acquire_dma_frame(state.handle, C.uint64_t(afterSequence), &dmaView)
+	if dmaAvailable < 0 {
+		return nil, errors.New("native DMA-BUF frame acquisition failed")
+	}
+	if dmaAvailable == 1 {
+		token := dmaView.token
+		width, height, stride := uint64(dmaView.width), uint64(dmaView.height), uint64(dmaView.stride)
+		uvOffset, byteLength := uint64(dmaView.uv_offset), uint64(dmaView.byte_length)
+		if dmaView.abi_version != 1 || uint64(dmaView.struct_size) < uint64(C.sizeof_mgfr_dma_frame_view) ||
+			token == nil || dmaView.fd < 0 || width == 0 || height == 0 || width > 16384 || height > 16384 ||
+			width%2 != 0 || height%2 != 0 || stride < width || uvOffset < stride*height ||
+			uvOffset > byteLength || stride*(height/2) > byteLength-uvOffset || byteLength > 128*1024*1024 ||
+			uint32(dmaView.fourcc) != 0x3231564e || dmaView.modifier != 0 ||
+			(dmaView.color_range != 1 && dmaView.color_range != 2) || (dmaView.encoding != 1 && dmaView.encoding != 2) {
+			if token != nil {
+				C.mgf_release_dma_frame(token)
+			}
+			return nil, errors.New("native engine returned an invalid DMA-BUF frame")
+		}
+		return newDMAFrame(token, int(width), int(height), uint64(dmaView.sequence), uint64(dmaView.timestamp_ns), func() { C.mgf_release_dma_frame(token) }), nil
 	}
 	var view C.mgf_frame_view
 	available := C.mgf_acquire_frame(state.handle, C.uint64_t(afterSequence), &view)

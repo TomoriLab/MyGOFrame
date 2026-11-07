@@ -151,5 +151,11 @@ func statusSummary(status map[string]any) string {
 	}
 	frames, _ := status["frames"].(float64)
 	dropped, _ := status["droppedFrames"].(float64)
-	return fmt.Sprintf("Captured %.0f frames · skipped %.0f frames", frames, dropped)
+	summary := fmt.Sprintf("Captured %.0f frames · skipped %.0f frames", frames, dropped)
+	if backend, _ := status["videoBackend"].(string); backend == "dmabuf" {
+		return "DMA-BUF · " + summary
+	} else if backend == "cpu" {
+		return "CPU · " + summary
+	}
+	return summary
 }

@@ -11,6 +11,16 @@ an isolated directory, vendors the exact go.mod/go.sum module versions from
 the existing Go cache, prepares an orig tarball, and calls dpkg-buildpackage.
 The build itself disables network module and Cargo access. Populate the Go
 module cache with `go mod download` first if dependencies are not cached.
+The preparation helper also verifies and includes the pinned upstream
+GTK, Fcitx, and KDE GTK-module source archives in native-inputs/. The package build reuses them
+offline and reconstructs native source trees under build/.
+
+The vendor snapshot contains the official MyGo v0.8.1 sources. The minimal
+renderer patch is shipped in patches/mygo/. During the build, Python 3 and
+GNU patch prepare only the affected files under build/mygo-overlay-source/.
+A generated Go overlay selects these patched copies. The vendor snapshot,
+module cache, and checked-in go.mod remain unchanged. No MyGo source tree
+is tracked under third_party/.
 
 The pkg.mygoframe.external-toolchains build profile permits an externally
 installed Swift 6.3.3 compiler. Debian's `swift` package is OpenStack storage
@@ -28,9 +38,19 @@ To rebuild the prepared source package:
 
 The Go executable and Swift facade are built with hardening flags. Swift
 standard and Foundation libraries are linked statically into the private
-facade. FFmpeg, PipeWire, GTK, and graphics libraries remain system runtime
-dependencies. The package includes Swift, Foundation, ICU, Go, and vendored
+facade. FFmpeg, PipeWire, and graphics libraries remain system runtime
+dependencies. The system GTK package remains the verified version/ABI
+baseline and supplies its data/modules. The package includes Swift, Foundation, ICU, Go, and vendored
 module license notices under /usr/share/doc/mygoframe/third-party/.
+Corrected application-private GTK/GDK/Fcitx shared libraries are installed in
+/usr/lib/<multiarch>/mygoframe/native/. Their post-strip manifest records
+the matching system GTK hash and private-library hashes. Complete native
+sources, patches, build helper, and LGPL notices are installed under
+/usr/share/doc/mygoframe/native-source/. See docs/native-runtime-build.md
+for ABI checks, compatible modified builds, and runtime selection.
+Corrected KDE color/decorations GTK modules are installed below the private
+runtime's gtk-3.0/modules/ directory. Their complete GPL/KDE license choices
+and exact source archive are included in the same native source bundle.
 
 The clean target removes generated files only. It preserves the vendor
 snapshot shipped in the orig tarball. No maintainer script changes device

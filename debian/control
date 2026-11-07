@@ -5,25 +5,37 @@ Maintainer: Euiseo Cha <escha@zeroday0619.dev>
 Build-Depends:
  debhelper-compat (= 13),
  bindgen,
+ binutils,
  cargo (>= 1.85) | rustup,
+ cmake,
  desktop-file-utils,
+ extra-cmake-modules,
  golang-go (>= 2:1.27~),
  libavcodec-dev,
  libavutil-dev,
  libclang-dev,
  libegl1,
+ libepoxy-dev,
  libepoxy0,
  libgl1,
  libgtk-3-0t64,
+ libgtk-3-dev (>= 3.24.52),
+ libgtk-3-dev (<< 3.24.53),
  libpipewire-0.3-dev,
  libswscale-dev,
+ libwayland-dev,
+ libxkbcommon-dev,
  lld,
+ meson,
+ ninja-build,
+ patch,
  patchelf,
  pkgconf,
- python3,
+ python3 (>= 3.12),
  ripgrep,
  rustc (>= 1.85) | rustup,
  swiftlang (>= 6.3.3) <!pkg.mygoframe.external-toolchains>,
+ wayland-protocols (>= 1.32),
 Standards-Version: 4.7.4
 Homepage: https://github.com/TomoriLab/MyGOFrame
 Rules-Requires-Root: no
@@ -40,7 +52,12 @@ Depends:
  libepoxy0,
  libgl1,
  libgtk-3-0t64,
-Recommends: pipewire, wireplumber
+Recommends:
+ libgbm1,
+ libgl1-mesa-dri,
+ libvulkan1,
+ pipewire,
+ wireplumber,
 Description: low-latency capture-card viewer with audio monitoring
  MyGOFrame displays a V4L2 capture device in a native MyGo window and
  monitors a selected PipeWire audio input through speakers or headphones.

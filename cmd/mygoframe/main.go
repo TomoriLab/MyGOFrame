@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/TomoriLab/MyGOFrame/internal/core"
+	"github.com/TomoriLab/MyGOFrame/internal/graphicsruntime"
+	"github.com/TomoriLab/MyGOFrame/internal/nativeruntime"
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
@@ -43,8 +45,29 @@ func run() error {
 	frameRate := flag.String("fps", "60", "Select frames per second, as a decimal or fraction such as 60000/1001.")
 	seconds := flag.Float64("seconds", 2, "Run a video or audio check for this many seconds.")
 	volume := flag.Float64("volume", 0, "Set audio check volume from 0 to 100; the default is silent.")
+	backend := flag.String("video-backend", "auto", "Select automatic DMA-BUF with CPU fallback, cpu, or dma capture.")
+	colorRange := flag.String("color-range", "auto", "Interpret input samples as auto, limited, or full range.")
+	measureLatency := flag.Bool("measure-latency", false, "Measure capture-to-GPU-texture readiness with native completion fences.")
 	uiSeconds := flag.Float64("smoke-ui-seconds", 0, "Close the native window after this many seconds for a UI check.")
 	flag.Parse()
+	if *backend != "auto" && *backend != "cpu" && *backend != "dma" {
+		return errors.New("--video-backend must be auto, cpu, or dma")
+	}
+	rangeValue := int32(0)
+	switch *colorRange {
+	case "auto":
+	case "limited":
+		rangeValue = 1
+	case "full":
+		rangeValue = 2
+	default:
+		return errors.New("--color-range must be auto, limited, or full")
+	}
+	if *measureLatency {
+		if err := os.Setenv("MYGOFRAME_MEASURE_LATENCY", "1"); err != nil {
+			return err
+		}
+	}
 	if flag.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments: %v", flag.Args())
 	}
@@ -87,6 +110,7 @@ func run() error {
 			if err != nil {
 				return err
 			}
+			config.Backend, config.ColorRange = *backend, rangeValue
 			if err := engine.StartVideo(config); err != nil {
 				return err
 			}
@@ -121,11 +145,24 @@ func run() error {
 		if err != nil {
 			return err
 		}
+		config.Backend, config.ColorRange = *backend, rangeValue
 		uiConfig = &config
+	}
+	if err := nativeruntime.Prepare(); err != nil {
+		return err
+	}
+	if _, err := graphicsruntime.Prepare(); err != nil {
+		fmt.Fprintf(os.Stderr, "Graphics compatibility preparation failed; retaining the normal driver configuration: %v\n", err)
+	}
+	if os.Getenv("MYGO_GL_API") == "" {
+		if err := os.Setenv("MYGO_GL_API", "gles"); err != nil {
+			return err
+		}
 	}
 	return runWindow(time.Duration(*uiSeconds*float64(time.Second)), uiConfig, windowConfiguration{
 		width: *windowWidth, height: *windowHeight, pattern: *uiPattern, patternWidth: int(*width), patternHeight: int(*height),
 		captureWindow: *captureWindow, captureWindowCycles: *captureWindowCycles,
+		videoBackend: *backend,
 	})
 }
 
@@ -262,22 +299,65 @@ type windowConfiguration struct {
 	patternWidth, patternHeight int
 	captureWindow               bool
 	captureWindowCycles         int
+	videoBackend                string
 }
 
-func runWindow(closeAfter time.Duration, videoConfig *core.VideoConfig, config windowConfiguration) error {
+func smokeWindowState(window *mygo.Window, role string) map[string]any {
+	bounds := func(rectangle mygo.Rectangle) map[string]int {
+		return map[string]int{"x": rectangle.X, "y": rectangle.Y, "width": rectangle.Width, "height": rectangle.Height}
+	}
+	return map[string]any{
+		"role": role, "contextID": window.GPUContextID(),
+		"bounds": bounds(window.Bounds()), "contentBounds": bounds(window.ContentBounds()),
+		"visible": window.IsVisible(), "focused": window.IsFocused(),
+		"minimized": window.IsMinimized(), "fullscreen": window.IsFullScreen(),
+	}
+}
+
+func runWindow(closeAfter time.Duration, videoConfig *core.VideoConfig, config windowConfiguration) (result error) {
 	engine, err := core.New()
 	if err != nil {
 		return err
 	}
 	defer engine.Close()
 	application := newApplication()
+	if config.videoBackend != "" {
+		application.videoBackend = config.videoBackend
+	}
 	var previewError error
 	var previewStatus map[string]any
+	var windowObservations []map[string]any
+	windowObservationIndex := make(map[*mygo.Window]int)
+	contextRoles := make(map[string]string)
+	recordWindow := func(window *mygo.Window, role string) {
+		observation := smokeWindowState(window, role)
+		if index, exists := windowObservationIndex[window]; exists {
+			windowObservations[index] = observation
+		} else {
+			windowObservationIndex[window] = len(windowObservations)
+			windowObservations = append(windowObservations, observation)
+		}
+		if identifier := observation["contextID"].(uint64); identifier != 0 {
+			contextRoles[fmt.Sprint(identifier)] = role
+		}
+	}
+	observeCaptureWindow := func() {
+		if closeAfter > 0 && application.presentation != nil {
+			window := application.presentation.window
+			window.OnClose(func(*mygo.CloseEvent) { recordWindow(window, "capture") })
+		}
+	}
 	captureWindowCheck := config.captureWindow && closeAfter > 0
 	if captureWindowCheck {
 		previewError = errors.New("capture window check did not complete")
 	}
 	if videoConfig != nil {
+		application.videoBackend = videoConfig.Backend
+		if videoConfig.ColorRange == 1 {
+			application.colorRange = "Limited"
+		} else if videoConfig.ColorRange == 2 {
+			application.colorRange = "Full"
+		}
 		device := core.VideoDevice{Path: videoConfig.Path, Name: "Video smoke test"}
 		application.devices = []core.VideoDevice{device}
 		application.device = videoLabel(device)
@@ -295,6 +375,9 @@ func runWindow(closeAfter time.Duration, videoConfig *core.VideoConfig, config w
 			application.worker = newWorker(engine, window, application)
 		}
 		var cycleTimers []*time.Timer
+		if closeAfter > 0 {
+			window.OnClose(func(*mygo.CloseEvent) { recordWindow(window, "main") })
+		}
 		window.OnClosed(func() {
 			for _, timer := range cycleTimers {
 				timer.Stop()
@@ -314,6 +397,15 @@ func runWindow(closeAfter time.Duration, videoConfig *core.VideoConfig, config w
 				}
 				if application.displayedFrame != nil {
 					previewStatus["displayedFrameSequence"] = application.displayedFrame.Sequence
+				}
+				previewStatus["gpuRenderMetrics"] = application.gpuRenderMetrics()
+				if os.Getenv("MYGOFRAME_MEASURE_LATENCY") == "1" {
+					timings, timingError := core.GPUTimings()
+					if timingError != nil {
+						previewError = errors.Join(previewError, timingError)
+					} else {
+						previewStatus["gpuTimings"] = timings
+					}
 				}
 			}
 			if captureWindowCheck {
@@ -341,6 +433,7 @@ func runWindow(closeAfter time.Duration, videoConfig *core.VideoConfig, config w
 		window.OnLeaveFullScreen(func() { application.fullscreen = false; window.Invalidate() })
 		if config.captureWindow {
 			application.openPresentation()
+			observeCaptureWindow()
 		}
 		for index := 1; index <= config.captureWindowCycles; index++ {
 			delay := closeAfter * time.Duration(index) / time.Duration(config.captureWindowCycles+1)
@@ -349,6 +442,7 @@ func runWindow(closeAfter time.Duration, videoConfig *core.VideoConfig, config w
 					if !application.closing {
 						application.closePresentation()
 						application.openPresentation()
+						observeCaptureWindow()
 					}
 				})
 			}))
@@ -362,7 +456,11 @@ func runWindow(closeAfter time.Duration, videoConfig *core.VideoConfig, config w
 			time.AfterFunc(closeAfter, window.Close)
 		}
 	})
-	defer application.close()
+	defer func() {
+		application.close()
+		ui.ShutdownText()
+		result = errors.Join(result, mygo.App.ShutdownNative())
+	}()
 	if err := mygo.App.Run(); err != nil {
 		return err
 	}
@@ -370,6 +468,11 @@ func runWindow(closeAfter time.Duration, videoConfig *core.VideoConfig, config w
 		return previewError
 	}
 	if videoConfig != nil || captureWindowCheck {
+		if previewStatus == nil {
+			previewStatus = make(map[string]any)
+		}
+		previewStatus["gpuContextRoles"] = contextRoles
+		previewStatus["windowObservations"] = windowObservations
 		return writeJSON(previewStatus)
 	}
 	return nil

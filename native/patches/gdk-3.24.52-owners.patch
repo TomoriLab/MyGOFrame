@@ -1,0 +1,984 @@
+--- a/gdk/gdkdisplay.c
++++ b/gdk/gdkdisplay.c
+@@ -278,6 +278,7 @@
+ {
+   if (info->toplevel_under_pointer)
+     g_object_unref (info->toplevel_under_pointer);
++  g_clear_object (&info->window_under_pointer);
+   g_clear_object (&info->last_slave);
+   g_slice_free (GdkPointerWindowInfo, info);
+ }
+--- a/gdk/gdkdnd.c
++++ b/gdk/gdkdnd.c
+@@ -251,6 +251,8 @@
+ {
+   GdkDragContext *context = GDK_DRAG_CONTEXT (object);
+ 
++  g_clear_object (&context->device);
++
+   contexts = g_list_remove (contexts, context);
+   g_list_free (context->targets);
+ 
+--- a/gdk/wayland/gdkdevice-wayland.c
++++ b/gdk/wayland/gdkdevice-wayland.c
+@@ -254,9 +254,14 @@
+   gdouble gesture_scale;
+ 
+   GdkCursor *grab_cursor;
++  gboolean native_closed;
+ };
+ 
+ G_DEFINE_TYPE (GdkWaylandSeat, gdk_wayland_seat, GDK_TYPE_SEAT)
++
++G_GNUC_INTERNAL void _gdk_wayland_seat_close_native (GdkSeat *base);
++
++static void gdk_wayland_pointer_data_finalize (GdkWaylandPointerData *pointer);
+ 
+ struct _GdkWaylandDevice
+ {
+@@ -1290,7 +1295,7 @@
+                        data_device, serial, surface, wl_fixed_to_double (x), wl_fixed_to_double (y), offer));
+ 
+   /* Update pointer state, so device state queries work during DnD */
+-  seat->pointer_info.focus = g_object_ref (dest_window);
++  g_set_object (&seat->pointer_info.focus, dest_window);
+   seat->pointer_info.surface_x = wl_fixed_to_double (x);
+   seat->pointer_info.surface_y = wl_fixed_to_double (y);
+ 
+@@ -1661,8 +1666,7 @@
+ 
+   _gdk_wayland_display_update_serial (display_wayland, serial);
+ 
+-  seat->pointer_info.focus = wl_surface_get_user_data (surface);
+-  g_object_ref (seat->pointer_info.focus);
++  g_set_object (&seat->pointer_info.focus, wl_surface_get_user_data (surface));
+ 
+   seat->pointer_info.button_modifiers = 0;
+ 
+@@ -2078,8 +2082,7 @@
+ 
+   _gdk_wayland_display_update_serial (display, serial);
+ 
+-  seat->keyboard_focus = wl_surface_get_user_data (surface);
+-  g_object_ref (seat->keyboard_focus);
++  g_set_object (&seat->keyboard_focus, wl_surface_get_user_data (surface));
+   seat->repeat_key = 0;
+ 
+   event = gdk_event_new (GDK_FOCUS_CHANGE);
+@@ -2956,17 +2959,40 @@
+ }
+ 
+ static void
++gdk_wayland_seat_remove_device (GdkWaylandSeat *seat,
++                                GdkDevice      **slot)
++{
++  GdkWaylandDeviceManager *manager;
++  GdkDevice *device = g_steal_pointer (slot);
++
++  if (!device)
++    return;
++
++  manager = GDK_WAYLAND_DEVICE_MANAGER (seat->device_manager);
++  manager->devices = g_list_remove (manager->devices, device);
++  _gdk_device_set_associated_device (device, NULL);
++  g_signal_emit_by_name (manager, "device-removed", device);
++  gdk_device_set_seat (device, NULL);
++  if (GDK_IS_WAYLAND_DEVICE (device))
++    GDK_WAYLAND_DEVICE (device)->pointer = NULL;
++  g_object_unref (device);
++}
++
++static void
+ _gdk_wayland_seat_remove_tool (GdkWaylandSeat           *seat,
+                                GdkWaylandTabletToolData *tool)
+ {
++  if (tool->current_tablet && tool->current_tablet->current_tool == tool)
++    {
++      gdk_wayland_pointer_stop_cursor_animation (&tool->current_tablet->pointer_info);
++      tool->current_tablet->current_tool = NULL;
++    }
+   g_clear_pointer (&tool->shape_device, wp_cursor_shape_device_v1_destroy);
+-
+   seat->tablet_tools = g_list_remove (seat->tablet_tools, tool);
+-
+-  gdk_seat_tool_removed (GDK_SEAT (seat), tool->tool);
+-
+-  zwp_tablet_tool_v2_destroy (tool->wp_tablet_tool);
+-  g_object_unref (tool->tool);
++  if (tool->tool)
++    gdk_seat_tool_removed (GDK_SEAT (seat), tool->tool);
++  g_clear_pointer (&tool->wp_tablet_tool, zwp_tablet_tool_v2_destroy);
++  g_clear_object (&tool->tool);
+   g_free (tool);
+ }
+ 
+@@ -2974,49 +3000,30 @@
+ _gdk_wayland_seat_remove_tablet (GdkWaylandSeat       *seat,
+                                  GdkWaylandTabletData *tablet)
+ {
+-  GdkWaylandDeviceManager *device_manager =
+-    GDK_WAYLAND_DEVICE_MANAGER (seat->device_manager);
++  GList *link;
+ 
+   seat->tablets = g_list_remove (seat->tablets, tablet);
+-
+-  zwp_tablet_v2_destroy (tablet->wp_tablet);
+-
++  for (link = seat->tablet_tools; link; link = link->next)
++    {
++      GdkWaylandTabletToolData *tool = link->data;
++      if (tool->current_tablet == tablet)
++        tool->current_tablet = NULL;
++    }
+   while (tablet->pads)
+     {
+       GdkWaylandTabletPadData *pad = tablet->pads->data;
+-
+       pad->current_tablet = NULL;
+-      tablet->pads = g_list_remove (tablet->pads, pad);
+-    }
+-
+-  device_manager->devices =
+-    g_list_remove (device_manager->devices, tablet->master);
+-  device_manager->devices =
+-    g_list_remove (device_manager->devices, tablet->stylus_device);
+-  device_manager->devices =
+-    g_list_remove (device_manager->devices, tablet->eraser_device);
+-
+-  g_signal_emit_by_name (device_manager, "device-removed",
+-                         tablet->stylus_device);
+-  g_signal_emit_by_name (device_manager, "device-removed",
+-                         tablet->eraser_device);
+-  g_signal_emit_by_name (device_manager, "device-removed",
+-                         tablet->master);
+-
+-  _gdk_device_set_associated_device (tablet->master, NULL);
+-  _gdk_device_set_associated_device (tablet->stylus_device, NULL);
+-  _gdk_device_set_associated_device (tablet->eraser_device, NULL);
+-
+-  if (tablet->pointer_info.focus)
+-    g_object_unref (tablet->pointer_info.focus);
+-
+-  if (tablet->axes)
+-    g_free (tablet->axes);
+-
+-  wl_surface_destroy (tablet->pointer_info.pointer_surface);
+-  g_object_unref (tablet->master);
+-  g_object_unref (tablet->stylus_device);
+-  g_object_unref (tablet->eraser_device);
++      tablet->pads = g_list_delete_link (tablet->pads, tablet->pads);
++    }
++  gdk_wayland_pointer_data_finalize (&tablet->pointer_info);
++  gdk_wayland_seat_remove_device (seat, &tablet->master);
++  gdk_wayland_seat_remove_device (seat, &tablet->stylus_device);
++  gdk_wayland_seat_remove_device (seat, &tablet->eraser_device);
++  g_clear_pointer (&tablet->wp_tablet, zwp_tablet_v2_destroy);
++  g_list_free_full (tablet->events, (GDestroyNotify) gdk_event_free);
++  g_free (tablet->name);
++  g_free (tablet->path);
++  g_free (tablet->axes);
+   g_free (tablet);
+ }
+ 
+@@ -3024,22 +3031,29 @@
+ _gdk_wayland_seat_remove_tablet_pad (GdkWaylandSeat          *seat,
+                                      GdkWaylandTabletPadData *pad)
+ {
+-  GdkWaylandDeviceManager *device_manager =
+-    GDK_WAYLAND_DEVICE_MANAGER (seat->device_manager);
++  GList *link;
+ 
+   seat->tablet_pads = g_list_remove (seat->tablet_pads, pad);
+-
+-  if (pad->device)
+-    {
+-      device_manager->devices =
+-        g_list_remove (device_manager->devices, pad->device);
+-      g_signal_emit_by_name (device_manager, "device-removed", pad->device);
+-
+-      _gdk_device_set_associated_device (pad->device, NULL);
+-
+-      g_object_unref (pad->device);
+-    }
+-
++  if (pad->current_tablet)
++    {
++      pad->current_tablet->pads = g_list_remove (pad->current_tablet->pads, pad);
++      pad->current_tablet = NULL;
++    }
++  gdk_wayland_seat_remove_device (seat, &pad->device);
++  g_list_free_full (pad->rings, (GDestroyNotify) zwp_tablet_pad_ring_v2_destroy);
++  g_list_free_full (pad->strips, (GDestroyNotify) zwp_tablet_pad_strip_v2_destroy);
++  for (link = pad->mode_groups; link; link = link->next)
++    {
++      GdkWaylandTabletPadGroupData *group = link->data;
++      g_list_free (group->rings);
++      g_list_free (group->strips);
++      g_list_free (group->buttons);
++      g_clear_pointer (&group->wp_tablet_pad_group, zwp_tablet_pad_group_v2_destroy);
++      g_free (group);
++    }
++  g_list_free (pad->mode_groups);
++  g_clear_pointer (&pad->wp_tablet_pad, zwp_tablet_pad_v2_destroy);
++  g_free (pad->path);
+   g_free (pad);
+ }
+ 
+@@ -3300,7 +3314,10 @@
+     }
+   else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && seat->wl_pointer)
+     {
+-      wl_pointer_release (seat->wl_pointer);
++      if (wl_pointer_get_version (seat->wl_pointer) >= WL_POINTER_RELEASE_SINCE_VERSION)
++        wl_pointer_release (seat->wl_pointer);
++      else
++        wl_pointer_destroy (seat->wl_pointer);
+       seat->wl_pointer = NULL;
+       _gdk_device_set_associated_device (seat->pointer, NULL);
+ 
+@@ -3372,7 +3389,10 @@
+     }
+   else if (!(caps & WL_SEAT_CAPABILITY_KEYBOARD) && seat->wl_keyboard)
+     {
+-      wl_keyboard_release (seat->wl_keyboard);
++      if (wl_keyboard_get_version (seat->wl_keyboard) >= WL_KEYBOARD_RELEASE_SINCE_VERSION)
++        wl_keyboard_release (seat->wl_keyboard);
++      else
++        wl_keyboard_destroy (seat->wl_keyboard);
+       seat->wl_keyboard = NULL;
+       _gdk_device_set_associated_device (seat->keyboard, NULL);
+ 
+@@ -3425,7 +3445,10 @@
+     }
+   else if (!(caps & WL_SEAT_CAPABILITY_TOUCH) && seat->wl_touch)
+     {
+-      wl_touch_release (seat->wl_touch);
++      if (wl_touch_get_version (seat->wl_touch) >= WL_TOUCH_RELEASE_SINCE_VERSION)
++        wl_touch_release (seat->wl_touch);
++      else
++        wl_touch_destroy (seat->wl_touch);
+       seat->wl_touch = NULL;
+       _gdk_device_set_associated_device (seat->touch_master, NULL);
+       _gdk_device_set_associated_device (seat->touch, NULL);
+@@ -3847,7 +3870,7 @@
+   _gdk_wayland_display_update_serial (display_wayland, serial);
+   tablet->pointer_info.enter_serial = serial;
+ 
+-  tablet->pointer_info.focus = g_object_ref (window);
++  g_set_object (&tablet->pointer_info.focus, window);
+   tablet->current_device =
+     tablet_select_device_for_tool (tablet, tool->tool);
+ 
+@@ -4979,38 +5002,23 @@
+ static void
+ gdk_wayland_pointer_data_finalize (GdkWaylandPointerData *pointer)
+ {
++  gdk_wayland_pointer_stop_cursor_animation (pointer);
+   g_clear_object (&pointer->focus);
+   g_clear_object (&pointer->cursor);
+-  wl_surface_destroy (pointer->pointer_surface);
+-  g_slist_free (pointer->pointer_surface_outputs);
++  g_clear_pointer (&pointer->frame.event, gdk_event_free);
++  g_clear_pointer (&pointer->shape_device, wp_cursor_shape_device_v1_destroy);
++  g_clear_pointer (&pointer->pointer_surface, wl_surface_destroy);
++  g_clear_pointer (&pointer->pointer_surface_outputs, g_slist_free);
+ }
+ 
+ static void
+ gdk_wayland_seat_finalize (GObject *object)
+ {
+   GdkWaylandSeat *seat = GDK_WAYLAND_SEAT (object);
+-  GList *l;
+-
+-  for (l = seat->tablet_tools; l != NULL; l = l->next)
+-    _gdk_wayland_seat_remove_tool (seat, l->data);
+-
+-  for (l = seat->tablet_pads; l != NULL; l = l->next)
+-    _gdk_wayland_seat_remove_tablet_pad (seat, l->data);
+-
+-  for (l = seat->tablets; l != NULL; l = l->next)
+-    _gdk_wayland_seat_remove_tablet (seat, l->data);
+-
+-  seat_handle_capabilities (seat, seat->wl_seat, 0);
+-  g_object_unref (seat->keymap);
+-  gdk_wayland_pointer_data_finalize (&seat->pointer_info);
+-  /* FIXME: destroy data_device */
+-  g_clear_object (&seat->keyboard_settings);
+-  g_clear_object (&seat->drop_context);
+-  g_hash_table_destroy (seat->touches);
+-  gdk_window_destroy (seat->foreign_dnd_window);
+-  zwp_tablet_seat_v2_destroy (seat->wp_tablet_seat);
+-  stop_key_repeat (seat);
+-
++
++  _gdk_wayland_seat_close_native (GDK_SEAT (seat));
++  g_clear_object (&seat->keymap);
++  g_clear_pointer (&seat->touches, g_hash_table_unref);
+   G_OBJECT_CLASS (gdk_wayland_seat_parent_class)->finalize (object);
+ }
+ 
+@@ -5305,12 +5313,104 @@
+   return slaves;
+ }
+ 
++void
++_gdk_wayland_seat_close_native (GdkSeat *base)
++{
++  GdkWaylandSeat *seat = GDK_WAYLAND_SEAT (base);
++  GdkWaylandDisplay *display;
++
++  if (seat->native_closed)
++    return;
++  seat->native_closed = TRUE;
++  g_object_ref (base);
++  if (!seat->display || !seat->device_manager)
++    {
++      g_object_unref (base);
++      return;
++    }
++  display = GDK_WAYLAND_DISPLAY (seat->display);
++
++  /* Native resources retire while their display and manager still exist. */
++  stop_key_repeat (seat);
++  gdk_wayland_pointer_stop_cursor_animation (&seat->pointer_info);
++  gdk_wayland_pointer_stop_cursor_animation (&seat->touch_info);
++  {
++    GList *link;
++    for (link = seat->tablets; link; link = link->next)
++      {
++        GdkWaylandTabletData *tablet = link->data;
++        gdk_wayland_pointer_stop_cursor_animation (&tablet->pointer_info);
++      }
++  }
++  g_signal_handlers_disconnect_by_data (display->screen, seat);
++  gdk_wayland_seat_set_grab_window (seat, NULL);
++  g_clear_object (&seat->grab_cursor);
++  g_clear_object (&seat->cursor);
++  g_clear_object (&seat->keyboard_focus);
++
++  while (seat->tablet_tools)
++    _gdk_wayland_seat_remove_tool (seat, seat->tablet_tools->data);
++  while (seat->tablets)
++    _gdk_wayland_seat_remove_tablet (seat, seat->tablets->data);
++  while (seat->tablet_pads)
++    _gdk_wayland_seat_remove_tablet_pad (seat, seat->tablet_pads->data);
++
++  g_clear_pointer (&seat->wp_pointer_gesture_swipe, zwp_pointer_gesture_swipe_v1_destroy);
++  g_clear_pointer (&seat->wp_pointer_gesture_pinch, zwp_pointer_gesture_pinch_v1_destroy);
++  seat_handle_capabilities (seat, seat->wl_seat, 0);
++  g_clear_object (&seat->drop_context);
++  gdk_wayland_seat_remove_device (seat, &seat->master_pointer);
++  gdk_wayland_seat_remove_device (seat, &seat->master_keyboard);
++  gdk_wayland_pointer_data_finalize (&seat->pointer_info);
++  gdk_wayland_pointer_data_finalize (&seat->touch_info);
++  g_clear_object (&seat->keyboard_settings);
++  if (seat->touches)
++    g_hash_table_remove_all (seat->touches);
++  if (seat->foreign_dnd_window)
++    {
++      GdkWindow *window = g_steal_pointer (&seat->foreign_dnd_window);
++      gdk_window_destroy (window);
++    }
++
++  g_clear_pointer (&seat->gtk_primary_data_device, gtk_primary_selection_device_destroy);
++  g_clear_pointer (&seat->zwp_primary_data_device_v1, zwp_primary_selection_device_v1_destroy);
++  g_clear_pointer (&seat->wp_tablet_seat, zwp_tablet_seat_v2_destroy);
++  if (seat->data_device)
++    {
++      if (wl_data_device_get_version (seat->data_device) >= WL_DATA_DEVICE_RELEASE_SINCE_VERSION)
++        wl_data_device_release (seat->data_device);
++      else
++        wl_data_device_destroy (seat->data_device);
++      seat->data_device = NULL;
++    }
++  if (seat->wl_seat)
++    {
++      if (wl_seat_get_version (seat->wl_seat) >= WL_SEAT_RELEASE_SINCE_VERSION)
++        wl_seat_release (seat->wl_seat);
++      else
++        wl_seat_destroy (seat->wl_seat);
++      seat->wl_seat = NULL;
++    }
++  g_signal_handlers_disconnect_by_data (seat->device_manager, seat);
++  seat->device_manager = NULL;
++  seat->display = NULL;
++  g_object_unref (base);
++}
++
++static void
++gdk_wayland_seat_dispose (GObject *object)
++{
++  _gdk_wayland_seat_close_native (GDK_SEAT (object));
++  G_OBJECT_CLASS (gdk_wayland_seat_parent_class)->dispose (object);
++}
++
+ static void
+ gdk_wayland_seat_class_init (GdkWaylandSeatClass *klass)
+ {
+   GObjectClass *object_class = G_OBJECT_CLASS (klass);
+   GdkSeatClass *seat_class = GDK_SEAT_CLASS (klass);
+ 
++  object_class->dispose = gdk_wayland_seat_dispose;
+   object_class->finalize = gdk_wayland_seat_finalize;
+ 
+   seat_class->get_capabilities = gdk_wayland_seat_get_capabilities;
+@@ -5432,6 +5532,7 @@
+                     G_CALLBACK (device_manager_device_removed), seat);
+ 
+   gdk_display_add_seat (display, GDK_SEAT (seat));
++  g_object_unref (seat);
+ }
+ 
+ void
+@@ -5456,7 +5557,10 @@
+       g_signal_handlers_disconnect_by_func (manager,
+                                             device_manager_device_removed,
+                                             seat);
++      g_object_ref (seat);
+       gdk_display_remove_seat (display, GDK_SEAT (seat));
++      _gdk_wayland_seat_close_native (GDK_SEAT (seat));
++      g_object_unref (seat);
+       break;
+     }
+ 
+--- a/gdk/wayland/gdkdisplay-wayland.c
++++ b/gdk/wayland/gdkdisplay-wayland.c
+@@ -42,6 +42,7 @@
+ #include "gdkprivate-wayland.h"
+ #include "gdkglcontext-wayland.h"
+ #include "gdkwaylandmonitor.h"
++#include "gdkmonitor-wayland.h"
+ #include "gdk-private.h"
+ #include "pointer-gestures-unstable-v1-client-protocol.h"
+ #include "tablet-unstable-v2-client-protocol.h"
+@@ -706,8 +707,24 @@
+ gdk_wayland_display_dispose (GObject *object)
+ {
+   GdkWaylandDisplay *display_wayland = GDK_WAYLAND_DISPLAY (object);
++  guint i;
++  GList *seats, *seat;
++
++  seats = gdk_display_list_seats (GDK_DISPLAY (object));
++  g_list_foreach (seats, (GFunc) g_object_ref, NULL);
++  for (seat = seats; seat != NULL; seat = seat->next)
++    {
++      /* Removal observers need the original device metadata before native retirement. */
++      gdk_display_remove_seat (GDK_DISPLAY (object), seat->data);
++      _gdk_wayland_seat_close_native (seat->data);
++    }
++  g_list_free_full (seats, g_object_unref);
+ 
+   _gdk_screen_close (display_wayland->screen);
++
++  for (i = 0; i < display_wayland->monitors->len; i++)
++    _gdk_wayland_monitor_close (display_wayland->monitors->pdata[i]);
++  g_ptr_array_set_size (display_wayland->monitors, 0);
+ 
+   if (display_wayland->event_source)
+     {
+@@ -760,6 +777,41 @@
+     }
+ 
+   g_ptr_array_free (display_wayland->monitors, TRUE);
++
++  /* The display owns EGL initialization. Contexts retain the display, so
++   * their resources have gone before finalization reaches this point. */
++  if (display_wayland->have_egl)
++    {
++      eglTerminate (display_wayland->egl_display);
++      display_wayland->egl_display = EGL_NO_DISPLAY;
++      display_wayland->have_egl = FALSE;
++    }
++
++  _gdk_wayland_display_close_shm_surfaces (display_wayland);
++
++  g_clear_pointer (&display_wayland->gtk_shell, gtk_shell1_destroy);
++  g_clear_pointer (&display_wayland->xdg_wm_base, xdg_wm_base_destroy);
++  g_clear_pointer (&display_wayland->zxdg_shell_v6, zxdg_shell_v6_destroy);
++  g_clear_pointer (&display_wayland->gtk_primary_selection_manager, gtk_primary_selection_device_manager_destroy);
++  g_clear_pointer (&display_wayland->zwp_primary_selection_manager_v1, zwp_primary_selection_device_manager_v1_destroy);
++  g_clear_pointer (&display_wayland->tablet_manager, zwp_tablet_manager_v2_destroy);
++  g_clear_pointer (&display_wayland->xdg_exporter_v1, zxdg_exporter_v1_destroy);
++  g_clear_pointer (&display_wayland->xdg_importer_v1, zxdg_importer_v1_destroy);
++  g_clear_pointer (&display_wayland->xdg_exporter_v2, zxdg_exporter_v2_destroy);
++  g_clear_pointer (&display_wayland->xdg_importer_v2, zxdg_importer_v2_destroy);
++  g_clear_pointer (&display_wayland->keyboard_shortcuts_inhibit, zwp_keyboard_shortcuts_inhibit_manager_v1_destroy);
++  g_clear_pointer (&display_wayland->server_decoration_manager, org_kde_kwin_server_decoration_manager_destroy);
++  g_clear_pointer (&display_wayland->xdg_output_manager, zxdg_output_manager_v1_destroy);
++#ifdef HAVE_XDG_ACTIVATION
++  g_clear_pointer (&display_wayland->xdg_activation, xdg_activation_v1_destroy);
++#endif
++  g_clear_pointer (&display_wayland->cursor_shape, wp_cursor_shape_manager_v1_destroy);
++  g_clear_pointer (&display_wayland->pointer_gestures, zwp_pointer_gestures_v1_destroy);
++  g_clear_pointer (&display_wayland->subcompositor, wl_subcompositor_destroy);
++  g_clear_pointer (&display_wayland->data_device_manager, wl_data_device_manager_destroy);
++  g_clear_pointer (&display_wayland->shm, wl_shm_destroy);
++  g_clear_pointer (&display_wayland->compositor, wl_compositor_destroy);
++  g_clear_pointer (&display_wayland->wl_registry, wl_registry_destroy);
+ 
+   wl_display_disconnect(display_wayland->wl_display);
+ 
+@@ -1287,6 +1339,8 @@
+ }
+ 
+ static const cairo_user_data_key_t gdk_wayland_shm_surface_cairo_key;
++/* Cairo may release its last external reference outside the GTK thread. */
++static GMutex shm_surface_mutex;
+ 
+ typedef struct _GdkWaylandCairoSurfaceData {
+   gpointer buf;
+@@ -1295,6 +1349,8 @@
+   struct wl_buffer *buffer;
+   GdkWaylandDisplay *display;
+   uint32_t scale;
++  cairo_surface_t *surface;
++  gboolean in_flight_reference;
+ } GdkWaylandCairoSurfaceData;
+ 
+ static int
+@@ -1395,14 +1451,77 @@
+ {
+   GdkWaylandCairoSurfaceData *data = p;
+ 
++  g_mutex_lock (&shm_surface_mutex);
++  if (data->display)
++    data->display->shm_surfaces = g_list_remove (data->display->shm_surfaces, data);
++
+   if (data->buffer)
+     wl_buffer_destroy (data->buffer);
+ 
+   if (data->pool)
+     wl_shm_pool_destroy (data->pool);
++  g_mutex_unlock (&shm_surface_mutex);
+ 
+   munmap (data->buf, data->buf_length);
+   g_free (data);
++}
++
++void
++_gdk_wayland_display_close_shm_surfaces (GdkWaylandDisplay *display)
++{
++  for (;;)
++    {
++      GdkWaylandCairoSurfaceData *data;
++      cairo_surface_t *in_flight_surface = NULL;
++      GList *link;
++
++      g_mutex_lock (&shm_surface_mutex);
++      link = display->shm_surfaces;
++      if (link == NULL)
++        {
++          g_mutex_unlock (&shm_surface_mutex);
++          break;
++        }
++      data = link->data;
++
++      display->shm_surfaces = g_list_delete_link (display->shm_surfaces, link);
++      data->display = NULL;
++      g_clear_pointer (&data->buffer, wl_buffer_destroy);
++      g_clear_pointer (&data->pool, wl_shm_pool_destroy);
++
++      /* A committed surface owns one reference until release; disconnect prevents that event. */
++      if (data->in_flight_reference)
++        {
++          data->in_flight_reference = FALSE;
++          in_flight_surface = data->surface;
++        }
++      g_mutex_unlock (&shm_surface_mutex);
++
++      /* Releasing the existing wire reference may invoke the userdata destructor. */
++      if (in_flight_surface)
++        cairo_surface_destroy (in_flight_surface);
++    }
++}
++
++void
++_gdk_wayland_shm_surface_mark_committed (cairo_surface_t *surface)
++{
++  GdkWaylandCairoSurfaceData *data =
++    cairo_surface_get_user_data (surface, &gdk_wayland_shm_surface_cairo_key);
++
++  g_return_if_fail (data != NULL && data->display != NULL);
++  g_return_if_fail (!data->in_flight_reference);
++  data->in_flight_reference = TRUE;
++}
++
++void
++_gdk_wayland_shm_surface_begin_release (cairo_surface_t *surface)
++{
++  GdkWaylandCairoSurfaceData *data =
++    cairo_surface_get_user_data (surface, &gdk_wayland_shm_surface_cairo_key);
++
++  g_return_if_fail (data != NULL && data->in_flight_reference);
++  data->in_flight_reference = FALSE;
+ }
+ 
+ cairo_surface_t *
+@@ -1416,7 +1535,7 @@
+   cairo_status_t status;
+   int stride;
+ 
+-  data = g_new (GdkWaylandCairoSurfaceData, 1);
++  data = g_new0 (GdkWaylandCairoSurfaceData, 1);
+   data->display = display;
+   data->buffer = NULL;
+   data->scale = scale;
+@@ -1438,8 +1557,13 @@
+                                             width*scale, height*scale,
+                                             stride, WL_SHM_FORMAT_ARGB8888);
+ 
+-  cairo_surface_set_user_data (surface, &gdk_wayland_shm_surface_cairo_key,
+-                               data, gdk_wayland_cairo_surface_destroy);
++  data->surface = surface;
++  if (cairo_surface_set_user_data (surface, &gdk_wayland_shm_surface_cairo_key,
++                                   data, gdk_wayland_cairo_surface_destroy) != CAIRO_STATUS_SUCCESS)
++    g_error ("Unable to attach Wayland Cairo surface ownership data.");
++  g_mutex_lock (&shm_surface_mutex);
++  display->shm_surfaces = g_list_prepend (display->shm_surfaces, data);
++  g_mutex_unlock (&shm_surface_mutex);
+ 
+   cairo_surface_set_device_scale (surface, scale, scale);
+ 
+--- a/gdk/wayland/gdkdisplay-wayland.h
++++ b/gdk/wayland/gdkdisplay-wayland.h
+@@ -147,6 +147,9 @@
+ 
+   GdkWaylandSelection *selection;
+ 
++  /* Cairo owns these records; the display retires their native proxies at shutdown. */
++  GList *shm_surfaces;
++
+   GPtrArray *monitors;
+ 
+   gint64 last_bell_time_ms;
+--- a/gdk/wayland/gdkglcontext-wayland.c
++++ b/gdk/wayland/gdkglcontext-wayland.c
+@@ -331,7 +331,10 @@
+   use_es = (_gdk_gl_flags & GDK_GL_GLES) != 0 ||
+            (share != NULL && gdk_gl_context_get_use_es (share));
+   if (!eglBindAPI (use_es ? EGL_OPENGL_ES_API : EGL_OPENGL_API))
++    {
++      eglTerminate (dpy);
+       return FALSE;
++    }
+ 
+   display_wayland->egl_display = dpy;
+   display_wayland->egl_major_version = major;
+--- a/gdk/wayland/gdkmonitor-wayland.c
++++ b/gdk/wayland/gdkmonitor-wayland.c
+@@ -30,6 +30,14 @@
+ {
+ }
+ 
++void
++_gdk_wayland_monitor_close (GdkWaylandMonitor *monitor)
++{
++  /* External GObject references may outlive the Wayland connection. */
++  g_clear_pointer (&monitor->xdg_output, zxdg_output_v1_destroy);
++  g_clear_pointer (&monitor->output, wl_output_destroy);
++}
++
+ static void
+ gdk_wayland_monitor_finalize (GObject *object)
+ {
+@@ -37,7 +45,7 @@
+ 
+   g_free (monitor->name);
+ 
+-  wl_output_destroy (monitor->output);
++  _gdk_wayland_monitor_close (monitor);
+ 
+   G_OBJECT_CLASS (gdk_wayland_monitor_parent_class)->finalize (object);
+ }
+--- a/gdk/wayland/gdkmonitor-wayland.h
++++ b/gdk/wayland/gdkmonitor-wayland.h
+@@ -44,4 +44,6 @@
+   GdkMonitorClass parent_class;
+ };
+ 
++void _gdk_wayland_monitor_close (GdkWaylandMonitor *monitor);
++
+ #endif
+--- a/gdk/wayland/gdkprivate-wayland.h
++++ b/gdk/wayland/gdkprivate-wayland.h
+@@ -45,6 +45,8 @@
+ #define WL_POINTER_HAS_FRAME 5
+ 
+ #define GDK_WINDOW_IS_WAYLAND(win)    (GDK_IS_WINDOW_IMPL_WAYLAND (((GdkWindow *)win)->impl))
++
++G_GNUC_INTERNAL void _gdk_wayland_seat_close_native (GdkSeat *seat);
+ 
+ GdkKeymap *_gdk_wayland_keymap_new (void);
+ void       _gdk_wayland_keymap_update_from_fd (GdkKeymap *keymap,
+@@ -248,6 +250,9 @@
+                                                            guint              scale);
+ struct wl_buffer *_gdk_wayland_shm_surface_get_wl_buffer (cairo_surface_t *surface);
+ gboolean _gdk_wayland_is_shm_surface (cairo_surface_t *surface);
++void _gdk_wayland_shm_surface_mark_committed (cairo_surface_t *surface);
++void _gdk_wayland_shm_surface_begin_release (cairo_surface_t *surface);
++void _gdk_wayland_display_close_shm_surfaces (GdkWaylandDisplay *display);
+ 
+ GdkWaylandSelection * gdk_wayland_display_get_selection (GdkDisplay *display);
+ GdkWaylandSelection * gdk_wayland_selection_new (void);
+--- a/gdk/wayland/gdkwindow-wayland.c
++++ b/gdk/wayland/gdkwindow-wayland.c
+@@ -240,6 +240,7 @@
+   struct zxdg_imported_v1 *imported_v1_transient_for;
+   struct zxdg_imported_v2 *imported_v2_transient_for;
+   GHashTable *shortcuts_inhibitors;
++  gboolean destroying;
+ 
+   struct wl_callback *surface_callback;
+   GHashTable *frame_callback_surfaces;
+@@ -733,7 +734,10 @@
+   wl_surface_commit (impl->display_server.wl_surface);
+ 
+   if (impl->pending_buffer_attached)
+-    impl->committed_cairo_surface = g_steal_pointer (&impl->staging_cairo_surface);
++    {
++      impl->committed_cairo_surface = g_steal_pointer (&impl->staging_cairo_surface);
++      _gdk_wayland_shm_surface_mark_committed (impl->committed_cairo_surface);
++    }
+ 
+   impl->pending_buffer_attached = FALSE;
+   impl->pending_commit = FALSE;
+@@ -826,8 +830,6 @@
+       window->height = 65535;
+     }
+ 
+-  g_object_ref (window);
+-
+   /* More likely to be right than just assuming 1 */
+ G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+   if (display_wayland->compositor_version >= WL_SURFACE_HAS_BUFFER_SCALE &&
+@@ -908,6 +910,9 @@
+   GdkWindowImplWayland *impl = cairo_surface_get_user_data (cairo_surface, &gdk_wayland_window_cairo_key);
+ 
+   g_return_if_fail (GDK_IS_WINDOW_IMPL_WAYLAND (impl));
++
++  /* The callback transfers the compositor lease to reuse or normal Cairo destruction. */
++  _gdk_wayland_shm_surface_begin_release (cairo_surface);
+ 
+   /* The released buffer isn't the latest committed one, we have no further
+    * use for it, so clean it up.
+@@ -1014,7 +1019,7 @@
+ {
+   GdkWindowImplWayland *impl = GDK_WINDOW_IMPL_WAYLAND (window->impl);
+ 
+-  if (GDK_WINDOW_DESTROYED (impl->wrapper))
++  if (impl->wrapper == NULL || GDK_WINDOW_DESTROYED (impl->wrapper))
+     return NULL;
+ 
+   gdk_wayland_window_ensure_cairo_surface (window);
+@@ -1117,8 +1122,8 @@
+ 
+   impl = GDK_WINDOW_IMPL_WAYLAND (object);
+ 
+-  if (gdk_wayland_window_is_exported (impl->wrapper))
+-    gdk_wayland_window_unexport_handle (impl->wrapper);
++  if (impl->wrapper != NULL && gdk_wayland_window_is_exported (impl->wrapper))
++    gdk_wayland_window_unexport (impl->wrapper);
+ 
+   g_free (impl->title);
+ 
+@@ -1666,7 +1671,11 @@
+ gdk_wayland_window_create_surface (GdkWindow *window)
+ {
+   GdkWindowImplWayland *impl = GDK_WINDOW_IMPL_WAYLAND (window->impl);
+-  GdkWaylandDisplay *display_wayland = GDK_WAYLAND_DISPLAY (gdk_window_get_display (window));
++  GdkWaylandDisplay *display_wayland;
++
++  if (impl->destroying || impl->wrapper == NULL || GDK_WINDOW_DESTROYED (window))
++    return;
++  display_wayland = GDK_WAYLAND_DISPLAY (gdk_window_get_display (window));
+ 
+   impl->display_server.wl_surface = wl_compositor_create_surface (display_wayland->compositor);
+   wl_surface_add_listener (impl->display_server.wl_surface, &surface_listener, window);
+@@ -3439,6 +3448,28 @@
+ {
+   GdkWaylandDisplay *display_wayland = GDK_WAYLAND_DISPLAY (gdk_window_get_display (window));
+   GdkWindowImplWayland *impl = GDK_WINDOW_IMPL_WAYLAND (window->impl);
++  GHashTableIter iter;
++  gpointer callback;
++
++  /* Listener data borrows the window, so callbacks must retire before it. */
++  g_clear_pointer (&impl->surface_callback, wl_callback_destroy);
++  if (impl->frame_callback_surfaces != NULL)
++    {
++      g_hash_table_iter_init (&iter, impl->frame_callback_surfaces);
++      while (g_hash_table_iter_next (&iter, NULL, &callback))
++        {
++          if (callback != NULL)
++            wl_callback_destroy (callback);
++          g_hash_table_iter_replace (&iter, NULL);
++        }
++    }
++  if (impl->shortcuts_inhibitors != NULL)
++    {
++      g_hash_table_iter_init (&iter, impl->shortcuts_inhibitors);
++      while (g_hash_table_iter_next (&iter, NULL, &callback))
++        zwp_keyboard_shortcuts_inhibitor_v1_destroy (callback);
++      g_hash_table_remove_all (impl->shortcuts_inhibitors);
++    }
+ 
+   unmap_popups_for_window (window);
+ 
+@@ -3905,19 +3936,29 @@
+                             gboolean   recursing,
+                             gboolean   foreign_destroy)
+ {
++  GdkWindowImplWayland *impl = GDK_WINDOW_IMPL_WAYLAND (window->impl);
++
+   g_return_if_fail (GDK_IS_WINDOW (window));
+ 
+   /* Wayland windows can't be externally destroyed; we may possibly
+    * eventually want to use this path at display close-down
+    */
+-  g_return_if_fail (!foreign_destroy);
+-
++  g_return_if_fail (!foreign_destroy || GDK_WINDOW_TYPE (window) == GDK_WINDOW_FOREIGN);
++
++  impl->destroying = TRUE;
++  impl->exported.export_count = 0;
++  gdk_wayland_window_unexport (window);
+   gdk_wayland_window_hide_surface (window);
++  if (impl->frame_callback_surfaces != NULL)
++    g_hash_table_remove_all (impl->frame_callback_surfaces);
++  /* Cairo buffers can retain the implementation after the wrapper dies. */
++  impl->wrapper = NULL;
+ }
+ 
+ static void
+ gdk_window_wayland_destroy_foreign (GdkWindow *window)
+ {
++  _gdk_window_destroy (window, TRUE);
+ }
+ 
+ static cairo_region_t *
+@@ -4134,9 +4175,11 @@
+ gdk_wayland_window_init_gtk_surface (GdkWindow *window)
+ {
+   GdkWindowImplWayland *impl = GDK_WINDOW_IMPL_WAYLAND (window->impl);
+-  GdkWaylandDisplay *display =
+-    GDK_WAYLAND_DISPLAY (gdk_window_get_display (window));
+-
++  GdkWaylandDisplay *display;
++
++  if (impl->destroying || impl->wrapper == NULL || GDK_WINDOW_DESTROYED (window))
++    return;
++  display = GDK_WAYLAND_DISPLAY (gdk_window_get_display (window));
+   if (impl->display_server.gtk_surface != NULL)
+     return;
+   if (!is_realized_toplevel (window))
+@@ -4839,7 +4882,7 @@
+       _gdk_window_destroy (window, TRUE);
+     }
+ 
+-  g_object_unref (window);
++  /* Wayland has no asynchronous server-side window ownership to release. */
+ }
+ 
+ static void
+@@ -5219,6 +5262,9 @@
+ {
+   GdkWindowImplWayland *impl = GDK_WINDOW_IMPL_WAYLAND (window->impl);
+ 
++  if (impl->destroying || impl->wrapper == NULL || GDK_WINDOW_DESTROYED (window))
++    return NULL;
++
+   if (impl->display_server.egl_window == NULL)
+     {
+       impl->display_server.egl_window =
+@@ -5235,13 +5281,17 @@
+ gdk_wayland_window_get_egl_surface (GdkWindow *window,
+                                     EGLConfig  config)
+ {
+-  GdkWaylandDisplay *display = GDK_WAYLAND_DISPLAY (gdk_window_get_display (window));
++  GdkWaylandDisplay *display;
+   GdkWindowImplWayland *impl;
+   struct wl_egl_window *egl_window;
+ 
+   g_return_val_if_fail (GDK_IS_WAYLAND_WINDOW (window), NULL);
+ 
+   impl = GDK_WINDOW_IMPL_WAYLAND (window->impl);
++
++  if (impl->destroying || impl->wrapper == NULL || GDK_WINDOW_DESTROYED (window))
++    return EGL_NO_SURFACE;
++  display = GDK_WAYLAND_DISPLAY (gdk_window_get_display (window));
+ 
+   if (impl->egl_surface == NULL)
+     {
+@@ -5258,12 +5308,16 @@
+ gdk_wayland_window_get_dummy_egl_surface (GdkWindow *window,
+                                           EGLConfig  config)
+ {
+-  GdkWaylandDisplay *display = GDK_WAYLAND_DISPLAY (gdk_window_get_display (window));
++  GdkWaylandDisplay *display;
+   GdkWindowImplWayland *impl;
+ 
+   g_return_val_if_fail (GDK_IS_WAYLAND_WINDOW (window), NULL);
+ 
+   impl = GDK_WINDOW_IMPL_WAYLAND (window->impl);
++
++  if (impl->destroying || impl->wrapper == NULL || GDK_WINDOW_DESTROYED (window))
++    return EGL_NO_SURFACE;
++  display = GDK_WAYLAND_DISPLAY (gdk_window_get_display (window));
+ 
+   if (impl->dummy_egl_surface == NULL)
+     {
+@@ -5546,13 +5600,16 @@
+ {
+   GdkWindowImplWayland *impl;
+   GdkWaylandDisplay *display_wayland;
+-  GdkDisplay *display = gdk_window_get_display (window);
++  GdkDisplay *display;
+   ExportedClosure *closure;
+ 
+   g_return_val_if_fail (GDK_IS_WAYLAND_WINDOW (window), FALSE);
++
++  impl = GDK_WINDOW_IMPL_WAYLAND (window->impl);
++  if (impl->destroying || impl->wrapper == NULL || GDK_WINDOW_DESTROYED (window))
++    return FALSE;
++  display = gdk_window_get_display (window);
+   g_return_val_if_fail (GDK_IS_WAYLAND_DISPLAY (display), FALSE);
+-
+-  impl = GDK_WINDOW_IMPL_WAYLAND (window->impl);
+   display_wayland = GDK_WAYLAND_DISPLAY (display);
+ 
+   if (display_wayland->xdg_exporter_v2)
+@@ -5667,6 +5724,9 @@
+   g_return_if_fail (GDK_IS_WAYLAND_WINDOW (window));
+ 
+   impl = GDK_WINDOW_IMPL_WAYLAND (window->impl);
++
++  if (impl->destroying)
++    return;
+ 
+   g_return_if_fail (impl->display_server.xdg_exported_v2 ||
+                     impl->display_server.xdg_exported_v1);
+@@ -5874,7 +5934,13 @@
+ 
+   impl = GDK_WINDOW_IMPL_WAYLAND (window->impl);
+ 
+-  g_hash_table_insert (impl->frame_callback_surfaces, surface, NULL);
++  if (!impl->destroying)
++    {
++      struct wl_callback *callback = g_hash_table_lookup (impl->frame_callback_surfaces, surface);
++      if (callback != NULL)
++        wl_callback_destroy (callback);
++      g_hash_table_insert (impl->frame_callback_surfaces, surface, NULL);
++    }
+ }
+ 
+ /**
+@@ -5901,5 +5967,10 @@
+ 
+   impl = GDK_WINDOW_IMPL_WAYLAND (window->impl);
+ 
++  {
++    struct wl_callback *callback = g_hash_table_lookup (impl->frame_callback_surfaces, surface);
++    if (callback != NULL)
++      wl_callback_destroy (callback);
++  }
+   g_hash_table_remove (impl->frame_callback_surfaces, surface);
+ }

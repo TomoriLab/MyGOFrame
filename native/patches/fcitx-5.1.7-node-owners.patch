@@ -1,0 +1,6 @@
+--- a/fcitx-gclient/fcitxgclient.c
++++ b/fcitx-gclient/fcitxgclient.c
+@@ -234,1 +234,2 @@
+-            info = introspection_data->interfaces[0];                          \
++            info = g_dbus_interface_info_ref(introspection_data->interfaces[0]); \
++            g_dbus_node_info_unref(introspection_data);                         \

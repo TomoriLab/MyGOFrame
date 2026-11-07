@@ -1,0 +1,679 @@
+[
+  {
+    "name": "selective_sorted_selection",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/z-x11.json",
+        "library": "libnvidia-egl-xlib.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/any-modern.json",
+        "library": "/opt/nvidia/libnvidia-egl-wayland2.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/m-gbm.json",
+        "library": "libnvidia-egl-gbm.so.1"
+      },
+      {
+        "path": "etc/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "/opt/nvidia/libnvidia-egl-wayland.so.1"
+      },
+      {
+        "path": "etc/egl/egl_external_platform.d/a-other.json",
+        "library": "libindependent-platform.so.1"
+      }
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1",
+      "__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES": "${ROOT}/etc/egl/egl_external_platform.d/a-other.json:${ROOT}/etc/egl/egl_external_platform.d/custom-legacy.json:${ROOT}/usr/share/egl/egl_external_platform.d/m-gbm.json:${ROOT}/usr/share/egl/egl_external_platform.d/z-x11.json",
+      "__GL_MaxFramesAllowed": "1"
+    }
+  },
+  {
+    "name": "explicit_files_preserved",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0",
+      "__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES": "/custom/selected.json"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/glvnd/egl_vendor.d/custom.json",
+        "library": "libEGL_nvidia.so.0"
+      }
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1"
+    }
+  },
+  {
+    "name": "explicit_empty_files_preserved",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0",
+      "__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES": "",
+      "__GL_DisableDBus": "0"
+    },
+    "invalidFiles": {
+      "usr/share/egl/egl_external_platform.d/ignored.json": "{"
+    },
+    "expectedChanges": {}
+  },
+  {
+    "name": "explicit_directories_preserved",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0",
+      "__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS": "",
+      "__GL_DisableDBus": ""
+    },
+    "expectedChanges": {}
+  },
+  {
+    "name": "non_nvidia",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/glvnd/egl_vendor.d/mesa.json",
+        "library": "libEGL_mesa.so.0"
+      }
+    ],
+    "expectedChanges": {}
+  },
+  {
+    "name": "modern_without_legacy",
+    "environment": {
+      "XDG_SESSION_TYPE": "wayland"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/renamed.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1"
+    }
+  },
+  {
+    "name": "missing_configuration_directories",
+    "environment": {
+      "XDG_SESSION_TYPE": "wayland"
+    },
+    "expectedChanges": {}
+  },
+  {
+    "name": "malformed_json_no_partial_changes",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      }
+    ],
+    "invalidFiles": {
+      "usr/share/glvnd/egl_vendor.d/broken.json": "{"
+    },
+    "expectedChanges": {},
+    "errorContains": "decode graphics manifest"
+  },
+  {
+    "name": "x11_selected_before_wayland",
+    "environment": {
+      "GDK_BACKEND": "x11,wayland",
+      "WAYLAND_DISPLAY": "wayland-0"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      }
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1"
+    }
+  },
+  {
+    "name": "wayland_selected_before_x11",
+    "environment": {
+      "GDK_BACKEND": "wayland,x11",
+      "__GL_DisableDBus": "0"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      }
+    ],
+    "expectedChanges": {
+      "__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES": "${ROOT}/usr/share/egl/egl_external_platform.d/legacy.json",
+      "__GL_MaxFramesAllowed": "1"
+    }
+  },
+  {
+    "name": "headless_does_not_select_wayland",
+    "environment": {},
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      }
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1"
+    }
+  },
+  {
+    "name": "future_driver_keeps_defaults",
+    "driverVersion": "620.10.01",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      }
+    ],
+    "expectedChanges": {}
+  },
+  {
+    "name": "unknown_driver_keeps_defaults",
+    "driverVersion": "unknown",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/glvnd/egl_vendor.d/nvidia.json",
+        "library": "libEGL_nvidia.so.0"
+      }
+    ],
+    "expectedChanges": {}
+  },
+  {
+    "name": "missing_driver_version_keeps_defaults",
+    "driverVersion": "",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      }
+    ],
+    "expectedChanges": {}
+  },
+  {
+    "name": "preferred_mesa_allocator_retains_modern",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-gbm.json",
+        "library": "libnvidia-egl-gbm.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      }
+    ],
+    "runtimeFiles": [
+      "usr/lib/gbm/dri_gbm.so",
+      "usr/lib/dri/zink_dri.so",
+      "usr/lib/libvulkan.so.1"
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1",
+      "GBM_BACKEND": "dri",
+      "MESA_LOADER_DRIVER_OVERRIDE": "zink",
+      "__GL_MaxFramesAllowed": "1"
+    }
+  },
+  {
+    "name": "preferred_modern_without_legacy",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "runtimeFiles": [
+      "usr/lib/gbm/dri_gbm.so",
+      "usr/lib/dri/zink_dri.so",
+      "usr/lib/libvulkan.so.1"
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1",
+      "GBM_BACKEND": "dri",
+      "MESA_LOADER_DRIVER_OVERRIDE": "zink",
+      "__GL_MaxFramesAllowed": "1"
+    }
+  },
+  {
+    "name": "incomplete_runtime_uses_legacy",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "runtimeFiles": [
+      "usr/lib/gbm/dri_gbm.so",
+      "usr/lib/dri/zink_dri.so"
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1",
+      "__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES": "${ROOT}/usr/share/egl/egl_external_platform.d/custom-legacy.json",
+      "__GL_MaxFramesAllowed": "1"
+    }
+  },
+  {
+    "name": "explicit_gbm_backend_preserved",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0",
+      "GBM_BACKEND": "nvidia-drm"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "runtimeFiles": [
+      "usr/lib/gbm/dri_gbm.so",
+      "usr/lib/dri/zink_dri.so",
+      "usr/lib/libvulkan.so.1"
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1"
+    }
+  },
+  {
+    "name": "explicit_empty_mesa_driver_preserved",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0",
+      "MESA_LOADER_DRIVER_OVERRIDE": ""
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "runtimeFiles": [
+      "usr/lib/gbm/dri_gbm.so",
+      "usr/lib/dri/zink_dri.so",
+      "usr/lib/libvulkan.so.1"
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1"
+    }
+  },
+  {
+    "name": "explicit_vulkan_driver_files_preserved",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0",
+      "VK_DRIVER_FILES": "/custom/vulkan.json"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "runtimeFiles": [
+      "usr/lib/gbm/dri_gbm.so",
+      "usr/lib/dri/zink_dri.so",
+      "usr/lib/libvulkan.so.1"
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1"
+    }
+  },
+  {
+    "name": "explicit_empty_vulkan_icd_preserved",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0",
+      "VK_ICD_FILENAMES": ""
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "runtimeFiles": [
+      "usr/lib/gbm/dri_gbm.so",
+      "usr/lib/dri/zink_dri.so",
+      "usr/lib/libvulkan.so.1"
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1"
+    }
+  },
+  {
+    "name": "explicit_gbm_backends_path_preserved",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0",
+      "GBM_BACKENDS_PATH": "/custom/backends"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "runtimeFiles": [
+      "usr/lib/gbm/dri_gbm.so",
+      "usr/lib/dri/zink_dri.so",
+      "usr/lib/libvulkan.so.1"
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1"
+    }
+  },
+  {
+    "name": "preferred_explicit_queue_preserved",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0",
+      "__GL_MaxFramesAllowed": "4"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "runtimeFiles": [
+      "usr/lib/gbm/dri_gbm.so",
+      "usr/lib/dri/zink_dri.so",
+      "usr/lib/libvulkan.so.1"
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1",
+      "GBM_BACKEND": "dri",
+      "MESA_LOADER_DRIVER_OVERRIDE": "zink"
+    }
+  },
+  {
+    "name": "preferred_empty_queue_preserved",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0",
+      "__GL_MaxFramesAllowed": ""
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "runtimeFiles": [
+      "usr/lib/gbm/dri_gbm.so",
+      "usr/lib/dri/zink_dri.so",
+      "usr/lib/libvulkan.so.1"
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1",
+      "GBM_BACKEND": "dri",
+      "MESA_LOADER_DRIVER_OVERRIDE": "zink"
+    }
+  },
+  {
+    "name": "legacy_explicit_queue_preserved",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0",
+      "__GL_MaxFramesAllowed": "2"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "runtimeFiles": [],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1",
+      "__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES": "${ROOT}/usr/share/egl/egl_external_platform.d/custom-legacy.json"
+    }
+  },
+  {
+    "name": "legacy_only_queue_limit",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      }
+    ],
+    "runtimeFiles": [],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1",
+      "__GL_MaxFramesAllowed": "1"
+    }
+  },
+  {
+    "name": "preferred_explicit_platform_files_preserved",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0",
+      "__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES": "/custom/platform.json"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "runtimeFiles": [
+      "usr/lib/gbm/dri_gbm.so",
+      "usr/lib/dri/zink_dri.so",
+      "usr/lib/libvulkan.so.1"
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1"
+    }
+  },
+  {
+    "name": "future_driver_with_mesa_keeps_defaults",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "runtimeFiles": [
+      "usr/lib/gbm/dri_gbm.so",
+      "usr/lib/dri/zink_dri.so",
+      "usr/lib/libvulkan.so.1"
+    ],
+    "expectedChanges": {},
+    "driverVersion": "620.10.01"
+  },
+  {
+    "name": "foreign_library_directory_is_not_native",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "runtimeFiles": [
+      "usr/lib/foreign-linux-gnu/gbm/dri_gbm.so",
+      "usr/lib/foreign-linux-gnu/dri/zink_dri.so",
+      "usr/lib/foreign-linux-gnu/libvulkan.so.1"
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1",
+      "__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES": "${ROOT}/usr/share/egl/egl_external_platform.d/custom-legacy.json",
+      "__GL_MaxFramesAllowed": "1"
+    }
+  },
+  {
+    "name": "split_runtime_components_do_not_select_mesa",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "runtimeFiles": [
+      "usr/lib/gbm/dri_gbm.so",
+      "usr/lib/dri/zink_dri.so",
+      "lib/libvulkan.so.1"
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1",
+      "__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES": "${ROOT}/usr/share/egl/egl_external_platform.d/custom-legacy.json",
+      "__GL_MaxFramesAllowed": "1"
+    }
+  },
+  {
+    "name": "explicit_egl_vendor_files_preserved",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0",
+      "__EGL_VENDOR_LIBRARY_FILENAMES": "/custom/mesa-vendor.json"
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "runtimeFiles": [
+      "usr/lib/gbm/dri_gbm.so",
+      "usr/lib/dri/zink_dri.so",
+      "usr/lib/libvulkan.so.1"
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1"
+    }
+  },
+  {
+    "name": "explicit_empty_egl_vendor_directories_preserved",
+    "environment": {
+      "WAYLAND_DISPLAY": "wayland-0",
+      "__EGL_VENDOR_LIBRARY_DIRS": ""
+    },
+    "manifests": [
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-legacy.json",
+        "library": "libnvidia-egl-wayland.so.1"
+      },
+      {
+        "path": "usr/share/egl/egl_external_platform.d/custom-modern.json",
+        "library": "libnvidia-egl-wayland2.so.1"
+      }
+    ],
+    "runtimeFiles": [
+      "usr/lib/gbm/dri_gbm.so",
+      "usr/lib/dri/zink_dri.so",
+      "usr/lib/libvulkan.so.1"
+    ],
+    "expectedChanges": {
+      "__GL_DisableDBus": "1"
+    }
+  }
+]

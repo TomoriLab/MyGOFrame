@@ -48,6 +48,9 @@ def main():
             raise SystemExit("Swift compiler not found. Set SWIFTC to an official Swift compiler.")
         environment["SWIFTC"] = swift_compiler
     try:
+        run(["python3", str(root / "tools/prepare-native-runtime.py"), "--download-only"], root, environment)
+        # Pinned source archives make the generated Debian source package rebuild offline.
+        shutil.copytree(root / "build/native-inputs", source / "native-inputs", dirs_exist_ok=True)
         run(["go", "mod", "vendor"], source, environment)
         module = json.loads(subprocess.check_output(
             ["go", "list", "-mod=mod", "-m", "-json", "github.com/egoist/mygo"],

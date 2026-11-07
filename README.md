@@ -6,6 +6,7 @@ MyGOFrame is a Linux capture-card viewer for playing console games through a cap
 
 - Select a V4L2 device, pixel format, resolution, and exact rational frame interval.
 - Select automatic, limited, or full input color range.
+- Use an optional DMA-BUF GPU path for progressive NV12 SDR capture, with automatic CPU fallback.
 - Monitor a selected PipeWire audio input through the default or a selected output.
 - Adjust monitoring volume, mute, and stop audio independently of video.
 - Fit the complete video inside the available viewport while preserving its aspect ratio.
@@ -36,10 +37,10 @@ Requirements:
 | Swift | Swift 6 toolchain; validated with 6.3.3 |
 | Go | 1.27.3 or newer, required by MyGo 0.8.1 |
 | Rust | Rust toolchain with Cargo and the `bindgen` CLI; validated with Rust 1.99.1 and bindgen 0.72.1 |
-| Build tools | GNU Make, pkg-config, Linux headers, libclang, and a C compiler for cgo; LLD for sanitizer tests |
+| Build tools | GNU Make, Python 3, GNU patch, pkg-config, Linux headers, libclang, and a C compiler for cgo; LLD for sanitizer tests |
 | Video libraries | FFmpeg libavcodec, libavutil, libswscale development packages |
 | Audio libraries | PipeWire libpipewire-0.3 development package and a running session manager |
-| Rendering | GTK 3 and OpenGL runtime libraries |
+| Rendering | GTK 3 and OpenGL runtime libraries; EGL, GLES 3 external textures, linear R8 DMA-BUF import, and native fence export for the DMA-BUF path |
 
 On Debian, the native development packages are `build-essential`, `pkg-config`, `libclang-dev`, `libavcodec-dev`, `libavutil-dev`, `libswscale-dev`, and `libpipewire-0.3-dev`. Install `lld` to run the sanitizer targets. Install the [Swift Linux toolchain](https://www.swift.org/install/linux/) and [Rust toolchain](https://www.rust-lang.org/tools/install) separately. Install the `bindgen` CLI with `cargo install bindgen-cli`. The `swift` executable from Python's OpenStack Swift client is unrelated to the Swift compiler.
 
@@ -54,6 +55,10 @@ make -j
 ```sh
 make SWIFTC=/path/to/swift/usr/bin/swiftc
 ```
+
+The build applies a small [MyGo renderer patch](docs/mygo-renderer.md) to generated files under `build/`. The official Go module and root `go.mod` remain unchanged. A complete MyGo source tree is not vendored in this repository.
+
+On tested NVIDIA driver 615.78.08, startup applies [process-scoped compatibility settings](docs/egl-leaks.md) to avoid known EGL/GBM and NVIDIA D-Bus allocation leaks. It prefers the installed Mesa Zink/Vulkan allocator with the NVIDIA GLES renderer and retains a legacy Wayland fallback. Explicit environment overrides are preserved. Other driver versions retain their normal configuration.
 
 Keep `build/mygoframe`, `build/libmygoframe_core.so`, and `build/libmygoframe_media.so` together. The application also requires the Swift runtime installed with its build toolchain. This build is intended for local execution; it does not bundle the Swift, FFmpeg, or PipeWire runtimes for distribution.
 
@@ -78,6 +83,10 @@ To open it when the application starts:
 Window sharing is handled by Discord and the desktop's capture backend. This option does not start a broadcast or select Discord's audio source. Audio monitoring still uses the selected PipeWire output.
 
 ## Latency and color
+
+The default `auto` backend tries DMA-BUF for supported NV12 SDR modes. Rust exports V4L2 buffers and converts their Y and UV planes to RGBA on the GPU. Swift owns session selection and restart control. Both native MyGo windows retain independent GPU presentation resources while sharing one capture stream. GPU completion fences keep a capture slot leased until every submitted GPU read has finished.
+
+Unsupported formats, export failures, incompatible graphics contexts, and GPU preparation failures restart capture through the CPU path. The status displays the active backend and fallback reason. Select the CPU path explicitly with `./build/mygoframe --video-backend cpu`. `--video-backend dma` requests DMA-BUF and still permits CPU fallback; inspect the active backend when validating it. The [benchmark guide](docs/benchmark-video.md) rejects fallback runs when comparing DMA-BUF with CPU rendering.
 
 Video and audio run independently without an added synchronization delay. Capture-card buffering, USB transport, conversion cost, display refresh, the compositor, and audio hardware remain part of end-to-end latency. Use an uncompressed mode that fits the card's USB bandwidth and measure the complete path before relying on it for timing-sensitive play.
 

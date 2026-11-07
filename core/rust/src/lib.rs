@@ -15,6 +15,8 @@ pub(crate) mod ffi {
 }
 
 pub mod audio;
+pub mod dma;
+pub mod gpu;
 pub mod video;
 
 use std::ffi::{CString, c_char};

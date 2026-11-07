@@ -1,0 +1,1832 @@
+--- a/content.go
++++ b/content.go
+@@ -164,6 +164,20 @@
+ 		w.invalidating.Store(false)
+ 		w.contentChanged()
+ 	})
++}
++
++// GPUContextID reports the native UI renderer context identifier without
++// creating a renderer or making a graphics context current. It returns zero
++// before a context prepares an external image or GPU-ready callback, when the
++// content uses software rendering, or after the window closes.
++func (w *Window) GPUContextID() uint64 {
++	var identifier uint64
++	onMain(func() {
++		if w.conn != nil && w.conn.GPUContextID != nil {
++			identifier = w.conn.GPUContextID()
++		}
++	})
++	return identifier
+ }
+ 
+ // Update runs fn on the main thread, where the window's Content builds its
+--- /dev/null
++++ b/internal/gpu/gl/external.go
+@@ -0,0 +1,64 @@
++//go:build (linux && (amd64 || arm64)) || js
++
++package gl
++
++import (
++	"sync/atomic"
++	"weak"
++
++	"github.com/egoist/mygo/internal/scene"
++)
++
++var lastExternalContextID atomic.Uint64
++
++type externalImageHooks struct {
++	texture func(*Renderer, *scene.Image) uintptr
++	ready   func(*Renderer, *scene.Image)
++	release func(*Renderer)
++	abandon func(*Renderer)
++	retire  func(*Renderer)
++}
++
++var activeExternalImageHooks *externalImageHooks
++
++// EnableExternalImages links external providers only into applications that opt
++// into their constructor or GPU-ready instrumentation. It runs on the UI thread.
++func EnableExternalImages() {
++	if activeExternalImageHooks == nil {
++		activeExternalImageHooks = &externalImageHooks{
++			texture: (*Renderer).externalImageTexture,
++			ready:   (*Renderer).externalImageReady,
++			release: (*Renderer).releaseExternalImages,
++			abandon: (*Renderer).abandonExternalImages,
++			retire:  (*Renderer).releaseRetiredExternalImages,
++		}
++	}
++}
++
++func (r *Renderer) externalID() uint64 {
++	if r.externalContextID == 0 {
++		r.externalContextID = lastExternalContextID.Add(1)
++	}
++	return r.externalContextID
++}
++
++func (r *Renderer) externalImageReady(image *scene.Image) {
++	image.GPUReady(r.externalID())
++}
++
++func (r *Renderer) externalImageTexture(image *scene.Image) uintptr {
++	if image.W > r.maxSize || image.H > r.maxSize {
++		return 0
++	}
++	if r.externalImages == nil {
++		r.externalImages = make(map[uint64]externalTexture)
++	}
++	if _, present := r.externalImages[image.ID()]; !present {
++		r.externalImages[image.ID()] = externalTexture{provider: image.External, image: weak.Make(image)}
++	}
++	texture := image.External.Texture(r.externalID())
++	if texture != 0 && image.GPUReady != nil {
++		r.externalImageReady(image)
++	}
++	return uintptr(texture)
++}
+--- /dev/null
++++ b/internal/gpu/gl/external_linux_test.go
+@@ -0,0 +1,115 @@
++//go:build linux && (amd64 || arm64)
++
++package gl
++
++import (
++	"runtime"
++	"testing"
++
++	"github.com/egoist/mygo/internal/scene"
++)
++
++type externalTestImage struct {
++	context   uintptr
++	texture   uint32
++	contextID uint64
++	prepared  int
++	released  int
++	abandoned int
++}
++
++func (provider *externalTestImage) Texture(contextID uint64) uint32 {
++	if currentContext() != provider.context {
++		panic("external image prepared without its context current")
++	}
++	provider.contextID = contextID
++	provider.prepared++
++	if provider.texture == 0 {
++		provider.texture = newTexture(glRGBA8, glRGBA, 2, 2, []byte{
++			255, 255, 255, 255, 255, 255, 255, 255,
++			255, 255, 255, 255, 255, 255, 255, 255,
++		}, 8)
++	}
++	return provider.texture
++}
++
++func (provider *externalTestImage) Release(contextID uint64) {
++	if currentContext() != provider.context || contextID != provider.contextID {
++		panic("external image released without its context current")
++	}
++	provider.released++
++	if provider.texture != 0 {
++		glDeleteTextures(1, &provider.texture)
++		provider.texture = 0
++	}
++}
++
++func (provider *externalTestImage) Abandon(contextID uint64) {
++	provider.abandoned++
++	provider.texture = 0
++}
++
++func TestExternalImageRendersAndRetiresInItsContext(t *testing.T) {
++	runtime.LockOSThread()
++	defer runtime.UnlockOSThread()
++	offscreen, err := NewOffscreen(true, 16, 16)
++	if err != nil {
++		t.Skip(err)
++	}
++	defer offscreen.Release()
++	renderer, err := New()
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer renderer.Release()
++	EnableExternalImages()
++	provider := &externalTestImage{context: currentContext()}
++	image := scene.NewExternalImage(2, 2, provider)
++	ready := 0
++	image.GPUReady = func(contextID uint64) {
++		if provider.prepared == 0 || contextID != provider.contextID || currentContext() != provider.context {
++			t.Error("GPU-ready callback ran before texture preparation or outside its context")
++		}
++		ready++
++	}
++	frame := &scene.Scene{Width: 16, Height: 16, Scale: 1, Ops: []scene.Op{{Kind: scene.OpImage, Rect: scene.Rect{W: 16, H: 16}, Src: scene.Rect{W: 2, H: 2}, Image: image}}}
++	if err := renderer.Render(frame); err != nil {
++		t.Fatal(err)
++	}
++	pixels, err := ReadFramebuffer(16, 16)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for index, value := range pixels {
++		if value != 255 {
++			t.Fatalf("external image pixel byte %d = %d, want 255", index, value)
++		}
++	}
++	if ready != 1 || provider.prepared != 1 || provider.contextID == 0 {
++		t.Fatalf("unexpected preparation counts: prepared=%d ready=%d context=%d", provider.prepared, ready, provider.contextID)
++	}
++	image.External = nil
++	frame.Ops = nil
++	if err := renderer.Render(frame); err != nil {
++		t.Fatal(err)
++	}
++	if provider.released != 1 || provider.abandoned != 0 {
++		t.Fatalf("retirement: released=%d abandoned=%d", provider.released, provider.abandoned)
++	}
++	renderer.Release()
++	if provider.released != 1 {
++		t.Fatal("external image released more than once")
++	}
++}
++
++func TestExternalImageContextLossUsesAbandon(t *testing.T) {
++	provider := &externalTestImage{}
++	image := scene.NewExternalImage(2, 2, provider)
++	renderer := &Renderer{externalContextID: 73, externalImages: map[uint64]externalTexture{}}
++	renderer.externalImages[image.ID()] = externalTexture{provider: provider}
++	renderer.abandonExternalImages()
++	renderer.abandonExternalImages()
++	if provider.abandoned != 1 || provider.released != 0 || len(renderer.externalImages) != 0 {
++		t.Fatalf("lost context cleanup: released=%d abandoned=%d", provider.released, provider.abandoned)
++	}
++}
+--- a/internal/gpu/gl/gl.go
++++ b/internal/gpu/gl/gl.go
+@@ -94,6 +94,11 @@
+ 	glNoError            = 0
+ )
+ 
++type externalTexture struct {
++	provider scene.ExternalImage
++	image    weak.Pointer[scene.Image]
++}
++
+ type texture struct {
+ 	tex       uint32
+ 	w, h      int
+@@ -115,8 +120,10 @@
+ // with the GL context that was current when New was called. All its
+ // methods must be called with that context current.
+ type Renderer struct {
+-	context uintptr // GDK's, to tell when the area's context changes
+-	es      bool
++	context           uintptr // GDK's, to tell when the area's context changes
++	externalContextID uint64
++	externalImages    map[uint64]externalTexture
++	es                bool
+ 	// dual tells that the context blends with a second color from the
+ 	// shader (OpenGL 3.3, or GLES with EXT_blend_func_extended).
+ 	dual bool
+@@ -528,6 +535,9 @@
+ }
+ 
+ func (r *Renderer) imageTexture(img *scene.Image) uintptr {
++	if hooks := activeExternalImageHooks; hooks != nil && img.External != nil {
++		return hooks.texture(r, img)
++	}
+ 	if img.W > r.maxSize || img.H > r.maxSize {
+ 		return 0
+ 	}
+@@ -565,6 +575,9 @@
+ 		}
+ 	}
+ 	t.lastFrame = r.frame
++	if hooks := activeExternalImageHooks; hooks != nil && img.GPUReady != nil {
++		hooks.ready(r, img)
++	}
+ 	return uintptr(t.tex)
+ }
+ 
+@@ -577,8 +590,12 @@
+ 	if c := currentContext(); c != r.context {
+ 		// GTK realized the area again, with a new context: the old one
+ 		// took the objects with it.
++		if hooks := activeExternalImageHooks; hooks != nil {
++			hooks.abandon(r)
++		}
+ 		r.forget()
+ 		r.context = c
++		r.externalContextID = 0
+ 		if err := r.init(); err != nil {
+ 			return err
+ 		}
+@@ -594,6 +611,9 @@
+ 
+ func (r *Renderer) draw(s *scene.Scene) error {
+ 	r.frame++
++	if hooks := activeExternalImageHooks; hooks != nil {
++		hooks.retire(r)
++	}
+ 	r.used = 0
+ 	glActiveTexture(glTexture0)
+ 	if err := r.syncAtlas(&r.mask, s.MaskAtlas, glR8, glRed); err != nil {
+@@ -1177,6 +1197,10 @@
+ // SwiftShader of browsers without a GPU, for ui's Painter.Accelerated.
+ func (r *Renderer) Software() bool { return r.software }
+ 
++// ContextID returns the identifier already assigned to this context's image
++// callbacks. Observation does not allocate an identifier or change GL state.
++func (r *Renderer) ContextID() uint64 { return r.externalContextID }
++
+ // softwareRenderer reports whether a context's renderer string names a
+ // renderer drawing on the CPU (internal/linux's softwareGL, which picks
+ // whether surfaces draw with OpenGL, knows Mesa's).
+@@ -1190,13 +1214,48 @@
+ 	return false
+ }
+ 
++// releaseRetiredExternalImages runs before drawing so retained old scenes no
++// longer keep an explicitly retired provider's native allocations alive.
++func (r *Renderer) releaseRetiredExternalImages() {
++	for identifier, texture := range r.externalImages {
++		if image := texture.image.Value(); image == nil || image.External == nil {
++			texture.provider.Release(r.externalContextID)
++			delete(r.externalImages, identifier)
++		}
++	}
++}
++
++func (r *Renderer) releaseExternalImages() {
++	for identifier, texture := range r.externalImages {
++		texture.provider.Release(r.externalContextID)
++		delete(r.externalImages, identifier)
++	}
++}
++
++// A lost context owns its GL deletion, while providers still own exported FDs
++// and other native references that an optional Abandon method must release.
++func (r *Renderer) abandonExternalImages() {
++	for identifier, texture := range r.externalImages {
++		if provider, okay := texture.provider.(interface{ Abandon(uint64) }); okay {
++			provider.Abandon(r.externalContextID)
++		}
++		delete(r.externalImages, identifier)
++	}
++}
++
+ // Release deletes the renderer's objects when its context is current, and
+ // otherwise leaves them to the context, which deletes them with itself.
+ func (r *Renderer) Release() {
+ 	r.b.Release()
+ 	if errLoad != nil || currentContext() != r.context {
++		if hooks := activeExternalImageHooks; hooks != nil {
++			hooks.abandon(r)
++		}
+ 		r.forget()
+ 		return
++	}
++	if hooks := activeExternalImageHooks; hooks != nil {
++		hooks.release(r)
+ 	}
+ 	for _, t := range r.images {
+ 		glDeleteTextures(1, &t.tex)
+--- a/internal/linux/app.go
++++ b/internal/linux/app.go
+@@ -6,6 +6,7 @@
+ 	"errors"
+ 	"fmt"
+ 	"os"
++	"strings"
+ 	"sync"
+ 	"sync/atomic"
+ 	"syscall"
+@@ -18,9 +19,11 @@
+ // Backend is the Linux (GTK 3 + WebKitGTK) implementation of
+ // platform.Backend.
+ type Backend struct {
+-	h       platform.AppHandler
+-	name    string
+-	running bool
++	h             platform.AppHandler
++	name          string
++	running       bool
++	nativeClosed  bool
++	systemSignals []nativeSystemSignal
+ 
+ 	windows map[int]*window
+ 	// flyouts are the flyouts that show on Wayland, in the order they
+@@ -106,6 +109,12 @@
+ }
+ 
+ func (b *Backend) Init(h platform.AppHandler, opts platform.AppOptions) error {
++	if strings.EqualFold(os.Getenv("MYGO_GL_API"), "gles") && os.Getenv("GDK_GL") == "" {
++		// GDK chooses the API of shared painting contexts during display initialization.
++		if err := os.Setenv("GDK_GL", "gles"); err != nil {
++			return fmt.Errorf("mygo: select the GLES rendering API: %w", err)
++		}
++	}
+ 	b.h = h
+ 	b.name = opts.Name
+ 	theBackend = b
+@@ -145,6 +154,33 @@
+ 	gIdleAddFull(0, readyCallback, 0, 0)
+ 	gtkMain()
+ 	b.running = false
++	return nil
++}
++
++// ShutdownNative runs only after the framework has stopped its native
++// clients. GDK owns its display and any underlying EGL initialization.
++func (b *Backend) ShutdownNative() error {
++	if !b.IsMainThread() {
++		return errors.New("mygo: native shutdown must run on the main thread")
++	}
++	return b.shutdownNative()
++}
++
++func (b *Backend) shutdownNative() error {
++	if b.nativeClosed {
++		return nil
++	}
++	if b.running || len(b.windows) != 0 || len(b.webViews) != 0 || len(b.trays) != 0 || len(b.modals) != 0 || len(b.popups) != 0 {
++		return errors.New("mygo: native shutdown requires all native clients to have stopped")
++	}
++	b.disconnectSystemSignals()
++	if gdkDisplayGetDefault != nil {
++		if display := gdkDisplayGetDefault(); display != 0 {
++			gdkGLContextClearCurrent()
++			gdkDisplayClose(display)
++		}
++	}
++	b.nativeClosed = true
+ 	return nil
+ }
+ 
+--- a/internal/linux/ffi.go
++++ b/internal/linux/ffi.go
+@@ -152,6 +152,8 @@
+ 	gVariantNewTuple               func(children unsafe.Pointer, n uintptr) ptr
+ 	gVariantNewArray               func(typ ptr, children unsafe.Pointer, n uintptr) ptr
+ 	gVariantTypeNew                func(s *byte) ptr
++	gVariantTypeFree               func(typ ptr)
++	gVariantRefSink                func(value ptr) ptr
+ 	gVariantGetChildValue          func(v ptr, i uintptr) ptr
+ 	gVariantGetUint32              func(v ptr) uint32
+ 	gVariantGetUint64              func(v ptr) uint64
+@@ -184,6 +186,8 @@
+ var (
+ 	gdkScreenGetRGBAVisual          func(screen ptr) ptr
+ 	gdkDisplayGetDefault            func() ptr
++	gdkDisplayClose                 func(display ptr)
++	gdkGLContextClearCurrent        func()
+ 	gdkDisplayGetNMonitors          func(d ptr) int32
+ 	gdkDisplayGetMonitor            func(d ptr, i int32) ptr
+ 	gdkDisplayGetPrimaryMonitor     func(d ptr) ptr
+@@ -587,6 +591,8 @@
+ 	mustBind(g, &gVariantNewTuple, "g_variant_new_tuple")
+ 	mustBind(g, &gVariantNewArray, "g_variant_new_array")
+ 	mustBind(g, &gVariantTypeNew, "g_variant_type_new")
++	mustBind(g, &gVariantTypeFree, "g_variant_type_free")
++	mustBind(g, &gVariantRefSink, "g_variant_ref_sink")
+ 	mustBind(g, &gVariantGetChildValue, "g_variant_get_child_value")
+ 	mustBind(g, &gVariantGetUint32, "g_variant_get_uint32")
+ 	mustBind(g, &gVariantGetUint64, "g_variant_get_uint64")
+@@ -636,6 +642,8 @@
+ 	d := libGDK
+ 	mustBind(d, &gdkScreenGetRGBAVisual, "gdk_screen_get_rgba_visual")
+ 	mustBind(d, &gdkDisplayGetDefault, "gdk_display_get_default")
++	mustBind(d, &gdkDisplayClose, "gdk_display_close")
++	mustBind(d, &gdkGLContextClearCurrent, "gdk_gl_context_clear_current")
+ 	mustBind(d, &gdkDisplayGetNMonitors, "gdk_display_get_n_monitors")
+ 	mustBind(d, &gdkDisplayGetMonitor, "gdk_display_get_monitor")
+ 	mustBind(d, &gdkDisplayGetPrimaryMonitor, "gdk_display_get_primary_monitor")
+--- a/internal/linux/glprobe.go
++++ b/internal/linux/glprobe.go
+@@ -125,7 +125,11 @@
+ 		return 0, 0
+ 	}
+ 	g := &gdkGL
+-	for _, es := range []bool{false, true} {
++	apis := []bool{false, true}
++	if strings.EqualFold(os.Getenv("MYGO_GL_API"), "gles") {
++		apis = []bool{true}
++	}
++	for _, es := range apis {
+ 		if es && g.setUseES == nil {
+ 			break
+ 		}
+--- /dev/null
++++ b/internal/linux/native_shutdown_test.go
+@@ -0,0 +1,141 @@
++//go:build linux && (amd64 || arm64)
++
++package linux
++
++import (
++	"fmt"
++	"reflect"
++	"testing"
++)
++
++func TestNativeShutdownDisconnectsOwnedSignalsBeforeDisplayClose(t *testing.T) {
++	calls := stubNativeShutdown(t)
++	previousReference, previousUnref := gObjectRef, gObjectUnref
++	previousConnect, previousDisconnect := gSignalConnectData, gSignalHandlerDisconnect
++	t.Cleanup(func() {
++		gObjectRef, gObjectUnref = previousReference, previousUnref
++		gSignalConnectData, gSignalHandlerDisconnect = previousConnect, previousDisconnect
++	})
++	var nextHandler uint64
++	gObjectRef = func(object ptr) ptr { return object }
++	gSignalConnectData = func(instance ptr, signal *byte, callback ptr, data ptr, destroy ptr, flags int32) uint64 {
++		nextHandler++
++		return nextHandler
++	}
++	gSignalHandlerDisconnect = func(instance ptr, handler uint64) {
++		*calls = append(*calls, fmt.Sprintf("disconnect:%d:%d", instance, handler))
++	}
++	gObjectUnref = func(instance ptr) { *calls = append(*calls, fmt.Sprintf("unref:%d", instance)) }
++	backend := New()
++	backend.connectSystemSignal(31, "notify::first", 1)
++	backend.connectSystemSignal(31, "notify::second", 2)
++	backend.connectSystemSignal(47, "device-removed", 3)
++	if err := backend.shutdownNative(); err != nil {
++		t.Fatal(err)
++	}
++	if err := backend.shutdownNative(); err != nil {
++		t.Fatal(err)
++	}
++	expected := []string{"disconnect:31:1", "disconnect:31:2", "disconnect:47:3", "unref:31", "unref:31", "unref:47", "clear", "close"}
++	if !reflect.DeepEqual(*calls, expected) || len(backend.systemSignals) != 0 {
++		t.Fatalf("observer cleanup order %v, expected %v", *calls, expected)
++	}
++}
++
++func TestNativeShutdownBalancesFailedAndMissingSignalOwners(t *testing.T) {
++	previousReference, previousUnref, previousConnect := gObjectRef, gObjectUnref, gSignalConnectData
++	t.Cleanup(func() {
++		gObjectRef, gObjectUnref, gSignalConnectData = previousReference, previousUnref, previousConnect
++	})
++	var references, releases, connections int
++	gObjectRef = func(object ptr) ptr { references++; return object }
++	gObjectUnref = func(object ptr) { releases++ }
++	gSignalConnectData = func(instance ptr, signal *byte, callback ptr, data ptr, destroy ptr, flags int32) uint64 {
++		connections++
++		return 0
++	}
++	backend := New()
++	backend.connectSystemSignal(0, "missing", 1)
++	backend.connectSystemSignal(31, "failed", 1)
++	if references != 1 || releases != 1 || connections != 1 || len(backend.systemSignals) != 0 {
++		t.Fatalf("unbalanced observer owners: references=%d releases=%d connections=%d retained=%d", references, releases, connections, len(backend.systemSignals))
++	}
++}
++
++func stubNativeShutdown(t *testing.T) *[]string {
++	t.Helper()
++	previousDisplay, previousClose, previousCurrent := gdkDisplayGetDefault, gdkDisplayClose, gdkGLContextClearCurrent
++	t.Cleanup(func() {
++		gdkDisplayGetDefault, gdkDisplayClose, gdkGLContextClearCurrent = previousDisplay, previousClose, previousCurrent
++	})
++	calls := new([]string)
++	gdkDisplayGetDefault = func() ptr { return 17 }
++	gdkGLContextClearCurrent = func() { *calls = append(*calls, "clear") }
++	gdkDisplayClose = func(display ptr) {
++		if display != 17 {
++			t.Fatalf("closed foreign display %d", display)
++		}
++		*calls = append(*calls, "close")
++	}
++	return calls
++}
++
++func TestNativeShutdownClosesDisplayOnceAfterClearingContext(t *testing.T) {
++	calls := stubNativeShutdown(t)
++	backend := New()
++	if err := backend.shutdownNative(); err != nil {
++		t.Fatal(err)
++	}
++	if err := backend.shutdownNative(); err != nil {
++		t.Fatal(err)
++	}
++	if !reflect.DeepEqual(*calls, []string{"clear", "close"}) {
++		t.Fatalf("native cleanup order %v", *calls)
++	}
++}
++
++func TestNativeShutdownRejectsActiveOwners(t *testing.T) {
++	for name, backend := range map[string]*Backend{
++		"loop":    {running: true},
++		"window":  {windows: map[int]*window{1: {}}},
++		"webview": {webViews: map[int]*window{1: {}}},
++		"tray":    {trays: map[int]*tray{1: {}}},
++		"modal":   {modals: []modal{{}}},
++		"popup":   {popups: []ptr{1}},
++	} {
++		t.Run(name, func(t *testing.T) {
++			calls := stubNativeShutdown(t)
++			gdkDisplayGetDefault = func() ptr { t.Fatal("native display accessed before clients stopped"); return 0 }
++			if err := backend.shutdownNative(); err == nil {
++				t.Fatal("active native owner was ignored")
++			}
++			if backend.nativeClosed || len(*calls) != 0 {
++				t.Fatal("rejected shutdown changed native state")
++			}
++		})
++	}
++}
++
++func TestNativeShutdownWithoutDisplayDoesNotInitializeGraphics(t *testing.T) {
++	calls := stubNativeShutdown(t)
++	gdkDisplayGetDefault = func() ptr { return 0 }
++	backend := New()
++	if err := backend.shutdownNative(); err != nil {
++		t.Fatal(err)
++	}
++	if len(*calls) != 0 || !backend.nativeClosed {
++		t.Fatal("empty display shutdown changed graphics state")
++	}
++}
++
++func TestNativeShutdownWithoutGTKDoesNotLoadLibraries(t *testing.T) {
++	calls := stubNativeShutdown(t)
++	gdkDisplayGetDefault = nil
++	backend := New()
++	if err := backend.shutdownNative(); err != nil {
++		t.Fatal(err)
++	}
++	if len(*calls) != 0 || !backend.nativeClosed {
++		t.Fatal("unused backend shutdown changed graphics state")
++	}
++}
+--- a/internal/linux/portal.go
++++ b/internal/linux/portal.go
+@@ -86,6 +86,7 @@
+ 	}
+ 	typ := gVariantTypeNew(cs("s"))
+ 	arr := gVariantNewArray(typ, unsafe.Pointer(&names[0]), uintptr(len(names)))
++	gVariantTypeFree(typ)
+ 	res, err := portalCall(portalPath, "org.freedesktop.portal.Settings", "ReadAll", tuple(arr), "(a{sa{sv}})")
+ 	if err != nil {
+ 		return 0, false
+@@ -98,7 +99,9 @@
+ // portalSetting returns the value of key in namespace of the settings
+ // portalSettings read, if it is of type typ, which the caller unrefs.
+ func portalSetting(all ptr, namespace, key, typ string) ptr {
+-	ns := gVariantLookupValue(all, cs(namespace), gVariantTypeNew(cs("a{sv}")))
++	expectedType := gVariantTypeNew(cs("a{sv}"))
++	ns := gVariantLookupValue(all, cs(namespace), expectedType)
++	gVariantTypeFree(expectedType)
+ 	if ns == 0 {
+ 		return 0
+ 	}
+--- a/internal/linux/surface.go
++++ b/internal/linux/surface.go
+@@ -7,6 +7,7 @@
+ 	"log"
+ 	"math"
+ 	"os"
++	"strings"
+ 	"sync"
+ 	"unicode/utf8"
+ 	"unsafe"
+@@ -69,6 +70,7 @@
+ 	cairoPaint                  func(cr ptr)
+ 	gtkGLAreaNew                func() ptr
+ 	gtkGLAreaSetRequiredVersion func(a ptr, major, minor int32)
++	gtkGLAreaSetUseES           func(a ptr, useES bool)
+ 	gtkGLAreaSetHasAlpha        func(a ptr, alpha bool)
+ 	gtkGLAreaGetError           func(a ptr) ptr
+ 	gtkGLAreaSetError           func(a, gerr ptr)
+@@ -130,6 +132,7 @@
+ 		mustBind(t, &gtkWidgetGetFrameClock, "gtk_widget_get_frame_clock")
+ 		mustBind(d, &gdkFrameClockCurrentTimings, "gdk_frame_clock_get_current_timings")
+ 		mustBind(d, &gdkFrameTimingsRefresh, "gdk_frame_timings_get_refresh_interval")
++		bind(t, &gtkGLAreaSetUseES, "gtk_gl_area_set_use_es")
+ 		// GtkGLArea came in GTK 3.16.
+ 		if !bind(t, &gtkGLAreaNew, "gtk_gl_area_new") || !bind(t, &gtkGLAreaSetRequiredVersion, "gtk_gl_area_set_required_version") ||
+ 			!bind(t, &gtkGLAreaSetHasAlpha, "gtk_gl_area_set_has_alpha") || !bind(t, &gtkGLAreaGetError, "gtk_gl_area_get_error") ||
+@@ -298,7 +301,13 @@
+ 	data := ptr(s.w.id)
+ 	s.area = newSurfaceArea(gl)
+ 	if gl {
+-		gtkGLAreaSetRequiredVersion(s.area, 3, 3)
++		if strings.EqualFold(os.Getenv("MYGO_GL_API"), "gles") && gtkGLAreaSetUseES != nil {
++			// GtkGLArea must agree with its create-context callback's API selection.
++			gtkGLAreaSetUseES(s.area, true)
++			gtkGLAreaSetRequiredVersion(s.area, 3, 0)
++		} else {
++			gtkGLAreaSetRequiredVersion(s.area, 3, 3)
++		}
+ 		// Only transparent windows show what is behind them. With an alpha
+ 		// channel GTK keeps the area in a texture it blends, rather than in
+ 		// a renderbuffer it copies, which took a small window 50 MB more of
+@@ -1209,6 +1218,9 @@
+ 	// has them: fcitx5's disconnects from it.
+ 	cbSurfaceUnrealize = purego.NewCallback(func(widget, data ptr) {
+ 		if s := b().surfaceOf(data); s != nil {
++			if s.gl {
++				s.send(platform.SurfaceEvent{Kind: platform.SurfaceGPURelease})
++			}
+ 			gtkIMContextSetClientWindow(s.im, 0)
+ 		}
+ 	})
+--- a/internal/linux/system.go
++++ b/internal/linux/system.go
+@@ -26,6 +26,37 @@
+ 	cbPowerSignal     ptr
+ 	cbNetworkChanged  ptr
+ )
++
++type nativeSystemSignal struct {
++	instance ptr
++	handler  uint64
++}
++
++func (b *Backend) connectSystemSignal(instance ptr, signal string, callback ptr) {
++	if instance == 0 {
++		return
++	}
++	// The observer owns a reference because seats may disappear before terminal shutdown.
++	owner := gObjectRef(instance)
++	handler := connect(owner, signal, callback, 0)
++	if handler == 0 {
++		gObjectUnref(owner)
++		return
++	}
++	b.systemSignals = append(b.systemSignals, nativeSystemSignal{owner, handler})
++}
++
++func (b *Backend) disconnectSystemSignals() {
++	signals := b.systemSignals
++	b.systemSignals = nil
++	// Every callback stops before releasing any object can emit another native signal.
++	for _, signal := range signals {
++		gSignalHandlerDisconnect(signal.instance, signal.handler)
++	}
++	for _, signal := range signals {
++		gObjectUnref(signal.instance)
++	}
++}
+ 
+ func initSystemCallbacks() {
+ 	cbThemeChanged = purego.NewCallback(func(a, b, data ptr) { theBackend.h.ThemeChanged() })
+@@ -58,19 +89,19 @@
+ 	})
+ 
+ 	settings := gtkSettingsGetDefault()
+-	connect(settings, "notify::gtk-theme-name", cbThemeChanged, 0)
+-	connect(settings, "notify::gtk-font-name", cbThemeChanged, 0) // Theme.UIFont
+-	connect(settings, "notify::gtk-decoration-layout", cbDecorationLayout, 0)
+-	connect(settings, "notify::gtk-application-prefer-dark-theme", cbThemeChanged, 0)
+-	connect(settings, "notify::gtk-enable-animations", cbThemeChanged, 0) // Theme.Preferences
++	theBackend.connectSystemSignal(settings, "notify::gtk-theme-name", cbThemeChanged)
++	theBackend.connectSystemSignal(settings, "notify::gtk-font-name", cbThemeChanged) // Theme.UIFont
++	theBackend.connectSystemSignal(settings, "notify::gtk-decoration-layout", cbDecorationLayout)
++	theBackend.connectSystemSignal(settings, "notify::gtk-application-prefer-dark-theme", cbThemeChanged)
++	theBackend.connectSystemSignal(settings, "notify::gtk-enable-animations", cbThemeChanged) // Theme.Preferences
+ 	watchPortalSettings()
+ 	if d := gdkDisplayGetDefault(); d != 0 {
+-		connect(d, "monitor-added", cbMonitorsChanged, 0)
+-		connect(d, "monitor-removed", cbMonitorsChanged, 0)
++		theBackend.connectSystemSignal(d, "monitor-added", cbMonitorsChanged)
++		theBackend.connectSystemSignal(d, "monitor-removed", cbMonitorsChanged)
+ 		// The pointing devices (Theme.Preferences).
+ 		if seat := gdkDisplayGetDefaultSeat(d); seat != 0 {
+-			connect(seat, "device-added", cbThemeChanged, 0)
+-			connect(seat, "device-removed", cbThemeChanged, 0)
++			theBackend.connectSystemSignal(seat, "device-added", cbThemeChanged)
++			theBackend.connectSystemSignal(seat, "device-removed", cbThemeChanged)
+ 		}
+ 	}
+ }
+@@ -200,9 +231,15 @@
+ 
+ func (s shell) ShowItemInFolder(path string) {
+ 	uri := fileURI(path)
+-	uris := gVariantNewArray(gVariantTypeNew(cs("s")), unsafe.Pointer(&[]ptr{gVariantNewString(cs(uri))}[0]), 1)
++	elementType := gVariantTypeNew(cs("s"))
++	uris := gVariantNewArray(elementType, unsafe.Pointer(&[]ptr{gVariantNewString(cs(uri))}[0]), 1)
++	gVariantTypeFree(elementType)
+ 	params := tuple(uris, gVariantNewString(cs("")))
+-	if _, err := dbusCall("org.freedesktop.FileManager1", "/org/freedesktop/FileManager1", "org.freedesktop.FileManager1", "ShowItems", params, ""); err != nil {
++	reply, err := dbusCall("org.freedesktop.FileManager1", "/org/freedesktop/FileManager1", "org.freedesktop.FileManager1", "ShowItems", params, "")
++	if reply != 0 {
++		gVariantUnref(reply)
++	}
++	if err != nil {
+ 		_ = s.OpenPath(filepath.Dir(path))
+ 	}
+ }
+@@ -589,11 +626,17 @@
+ func dbusCall(name, path, iface, method string, params ptr, replyType string) (ptr, error) {
+ 	conn, err := bus()
+ 	if err != nil {
++		// CallSync consumes floating parameters. Sink and release them on
++		// this earlier failure too, while preserving borrowed nonfloating inputs.
++		if params != 0 {
++			gVariantUnref(gVariantRefSink(params))
++		}
+ 		return 0, err
+ 	}
+ 	var rt ptr
+ 	if replyType != "" {
+ 		rt = gVariantTypeNew(cs(replyType))
++		defer gVariantTypeFree(rt)
+ 	}
+ 	var gerr ptr
+ 	res := gDBusConnectionCallSync(conn, cs(name), cs(path), cs(iface), cs(method), params, rt, 0, 3000, 0, &gerr)
+@@ -691,9 +734,13 @@
+ 			hints = append(hints, hint)
+ 		}
+ 	}
+-	hintArray := gVariantNewArray(gVariantTypeNew(cs("{sv}")), nil, 0)
++	var hintArray ptr
+ 	if len(hints) > 0 {
+ 		hintArray = gVariantNewArray(0, unsafe.Pointer(&hints[0]), uintptr(len(hints)))
++	} else {
++		elementType := gVariantTypeNew(cs("{sv}"))
++		hintArray = gVariantNewArray(elementType, nil, 0)
++		gVariantTypeFree(elementType)
+ 	}
+ 	body := n.Body
+ 	if n.Subtitle != "" {
+--- /dev/null
++++ b/internal/linux/variant_ownership_test.go
+@@ -0,0 +1,244 @@
++//go:build linux && (amd64 || arm64)
++
++package linux
++
++import (
++	"runtime"
++	"testing"
++	"unsafe"
++
++	"github.com/egoist/mygo/internal/platform"
++)
++
++type variantLedger struct {
++	live                        map[ptr]bool
++	created, freed, emptyArrays int
++}
++
++func stubVariants(t *testing.T) *variantLedger {
++	t.Helper()
++	oldTypeNew, oldTypeFree := gVariantTypeNew, gVariantTypeFree
++	oldArray, oldString, oldTuple := gVariantNewArray, gVariantNewString, gVariantNewTuple
++	oldCall, oldLookup, oldChild := gDBusConnectionCallSync, gVariantLookupValue, gVariantGetChildValue
++	oldUnref, oldErrorFree := gVariantUnref, gErrorFree
++	oldBus, oldRegistered := sessionBus, portalRegistered
++	oldUint32, oldInt32, oldGetUint32 := gVariantNewUint32, gVariantNewInt32, gVariantGetUint32
++	oldBoolean, oldVariant, oldEntry := gVariantNewBoolean, gVariantNewVariant, gVariantNewDictEntry
++	oldSubscribed, oldBackend := notifySubscribed, theBackend
++	oldNotifications, oldIdentifiers := notifications, notifyDBusIDs
++	t.Cleanup(func() {
++		gVariantTypeNew, gVariantTypeFree = oldTypeNew, oldTypeFree
++		gVariantNewArray, gVariantNewString, gVariantNewTuple = oldArray, oldString, oldTuple
++		gDBusConnectionCallSync, gVariantLookupValue, gVariantGetChildValue = oldCall, oldLookup, oldChild
++		gVariantUnref, gErrorFree = oldUnref, oldErrorFree
++		sessionBus, portalRegistered = oldBus, oldRegistered
++		gVariantNewUint32, gVariantNewInt32, gVariantGetUint32 = oldUint32, oldInt32, oldGetUint32
++		gVariantNewBoolean, gVariantNewVariant, gVariantNewDictEntry = oldBoolean, oldVariant, oldEntry
++		notifySubscribed, theBackend = oldSubscribed, oldBackend
++		notifications, notifyDBusIDs = oldNotifications, oldIdentifiers
++	})
++	ledger := &variantLedger{live: make(map[ptr]bool)}
++	gVariantTypeNew = func(*byte) ptr {
++		ledger.created++
++		value := ptr(ledger.created)
++		ledger.live[value] = true
++		return value
++	}
++	gVariantTypeFree = func(value ptr) {
++		if !ledger.live[value] {
++			t.Fatalf("type %d freed without one live owner", value)
++		}
++		delete(ledger.live, value)
++		ledger.freed++
++	}
++	gVariantNewArray = func(value ptr, _ unsafe.Pointer, length uintptr) ptr {
++		if value != 0 && !ledger.live[value] {
++			t.Fatal("array borrowed a released type")
++		}
++		if length == 0 {
++			ledger.emptyArrays++
++		}
++		return 100
++	}
++	gVariantNewString = func(*byte) ptr { return 101 }
++	gVariantNewTuple = func(unsafe.Pointer, uintptr) ptr { return 102 }
++	gVariantNewUint32 = func(uint32) ptr { return 103 }
++	gVariantNewInt32 = func(int32) ptr { return 104 }
++	gVariantNewBoolean = func(bool) ptr { return 105 }
++	gVariantNewVariant = func(ptr) ptr { return 106 }
++	gVariantNewDictEntry = func(ptr, ptr) ptr { return 107 }
++	gVariantGetUint32 = func(ptr) uint32 { return 5 }
++	gVariantGetChildValue = func(ptr, uintptr) ptr { return 108 }
++	gVariantUnref = func(ptr) {}
++	gErrorFree = func(ptr) {}
++	gVariantLookupValue = func(_ ptr, _ *byte, expected ptr) ptr {
++		if expected != 0 && !ledger.live[expected] {
++			t.Fatal("lookup borrowed a released type")
++		}
++		return 0
++	}
++	gDBusConnectionCallSync = func(_ ptr, _, _, _, _ *byte, _ ptr, expected ptr, _ int32, _ int32, _ ptr, _ *ptr) ptr {
++		if expected != 0 && !ledger.live[expected] {
++			t.Fatal("D-Bus call borrowed a released type")
++		}
++		return 109
++	}
++	sessionBus, portalRegistered, notifySubscribed = 500, true, true
++	theBackend = &Backend{}
++	notifications, notifyDBusIDs = make(map[uint32]string), make(map[string]uint32)
++	return ledger
++}
++
++func requireReleased(t *testing.T, ledger *variantLedger, count int) {
++	t.Helper()
++	if ledger.created != count || ledger.freed != count || len(ledger.live) != 0 {
++		t.Fatalf("type ownership created=%d freed=%d live=%v", ledger.created, ledger.freed, ledger.live)
++	}
++}
++
++func TestVariantReplyTypeSurvivesSyncCallAndIsReleased(t *testing.T) {
++	ledger := stubVariants(t)
++	if _, err := dbusCall("name", "/path", "interface", "method", 0, "(u)"); err != nil {
++		t.Fatal(err)
++	}
++	requireReleased(t, ledger, 1)
++}
++
++func TestVariantShowItemReleasesReply(t *testing.T) {
++	ledger := stubVariants(t)
++	previousFile, previousURI := gFileNewForPath, gFileGetURI
++	previousUnref, previousFree := gObjectUnref, gFree
++	t.Cleanup(func() {
++		gFileNewForPath, gFileGetURI = previousFile, previousURI
++		gObjectUnref, gFree = previousUnref, previousFree
++	})
++	uri := cs("file:///tmp/example")
++	gFileNewForPath = func(*byte) ptr { return 50 }
++	gFileGetURI = func(ptr) ptr { return ptr(uintptr(unsafe.Pointer(uri))) }
++	gObjectUnref = func(ptr) {}
++	gFree = func(ptr) {}
++	var released []ptr
++	gVariantUnref = func(value ptr) { released = append(released, value) }
++	(shell{}).ShowItemInFolder("/tmp/example")
++	requireReleased(t, ledger, 1)
++	if len(released) != 1 || released[0] != 109 {
++		t.Fatalf("ShowItems released replies %v", released)
++	}
++	runtime.KeepAlive(uri)
++}
++
++func TestVariantBusErrorConsumesOnlyFloatingParameters(t *testing.T) {
++	for _, state := range []string{"floating", "borrowed", "absent"} {
++		t.Run(state, func(t *testing.T) {
++			stubVariants(t)
++			previousBus, previousSink := gBusGetSync, gVariantRefSink
++			t.Cleanup(func() { gBusGetSync, gVariantRefSink = previousBus, previousSink })
++			sessionBus = 0
++			message := cs("injected bus failure")
++			nativeError := struct {
++				domain  uint32
++				code    int32
++				message *byte
++			}{1, 1, message}
++			gBusGetSync = func(_ int32, _ ptr, failure *ptr) ptr {
++				*failure = ptr(uintptr(unsafe.Pointer(&nativeError)))
++				return 0
++			}
++			parameters := ptr(10)
++			if state == "absent" {
++				parameters = 0
++			}
++			references, sinks := 1, 0
++			gVariantRefSink = func(value ptr) ptr {
++				if value != parameters || value == 0 {
++					t.Fatalf("unexpected parameter sink %d", value)
++				}
++				sinks++
++				if state == "borrowed" {
++					references++
++				}
++				return value
++			}
++			gVariantUnref = func(value ptr) {
++				if value != parameters || value == 0 {
++					t.Fatalf("unexpected parameter release %d", value)
++				}
++				references--
++			}
++			if _, err := dbusCall("name", "/path", "interface", "method", parameters, ""); err == nil {
++				t.Fatal("session bus failure was ignored")
++			}
++			wantReferences, wantSinks := 1, 1
++			if state == "floating" {
++				wantReferences = 0
++			}
++			if state == "absent" {
++				wantSinks = 0
++			}
++			if references != wantReferences || sinks != wantSinks {
++				t.Fatalf("parameter ownership left %d references and %d sink calls", references, sinks)
++			}
++			runtime.KeepAlive(nativeError)
++		})
++	}
++}
++
++func TestVariantReplyTypeReleasedOnCallError(t *testing.T) {
++	ledger := stubVariants(t)
++	message := cs("injected call failure")
++	nativeError := struct {
++		domain  uint32
++		code    int32
++		message *byte
++	}{1, 1, message}
++	gDBusConnectionCallSync = func(_ ptr, _, _, _, _ *byte, _ ptr, expected ptr, _ int32, _ int32, _ ptr, failure *ptr) ptr {
++		if !ledger.live[expected] {
++			t.Fatal("type released before call error completed")
++		}
++		*failure = ptr(uintptr(unsafe.Pointer(&nativeError)))
++		return 0
++	}
++	if _, err := dbusCall("name", "/path", "interface", "method", 0, "(u)"); err == nil {
++		t.Fatal("native error not propagated")
++	}
++	runtime.KeepAlive(nativeError)
++	requireReleased(t, ledger, 1)
++}
++
++func TestVariantPortalSettingsReleasesElementAndReplyTypes(t *testing.T) {
++	ledger := stubVariants(t)
++	if _, ok := portalSettings("org.freedesktop.appearance"); !ok {
++		t.Fatal("portal result rejected")
++	}
++	requireReleased(t, ledger, 2)
++}
++
++func TestVariantPortalLookupReleasesTypeOnMissingValue(t *testing.T) {
++	ledger := stubVariants(t)
++	if value := portalSetting(100, "namespace", "key", "u"); value != 0 {
++		t.Fatal("missing lookup returned a value")
++	}
++	requireReleased(t, ledger, 1)
++}
++
++func TestVariantNotificationTypesAndNoUnusedEmptyArray(t *testing.T) {
++	for _, silent := range []bool{false, true} {
++		t.Run(map[bool]string{false: "empty-hints", true: "populated-hints"}[silent], func(t *testing.T) {
++			ledger := stubVariants(t)
++			if err := theBackend.showNotification(&platform.Notification{ID: "notification", Silent: silent}); err != nil {
++				t.Fatal(err)
++			}
++			if silent {
++				requireReleased(t, ledger, 1)
++				if ledger.emptyArrays != 0 {
++					t.Fatal("unused empty hints array allocated")
++				}
++			} else {
++				requireReleased(t, ledger, 2)
++				if ledger.emptyArrays != 1 {
++					t.Fatal("empty hints array not constructed exactly once")
++				}
++			}
++		})
++	}
++}
+--- a/internal/platform/surface.go
++++ b/internal/platform/surface.go
+@@ -348,6 +348,8 @@
+ 	// into changed (Surface.Native), as a window of Windows composes its
+ 	// frames once it has web views: the content makes its renderer again.
+ 	SurfaceRenew
++	// SurfaceGPURelease runs before the native drawing context is unrealized.
++	SurfaceGPURelease
+ 	// WebViewPress reports that Button went down at X, Y on a web view
+ 	// the content shows there (Surface.PlaceWebViews), which takes the
+ 	// press and what follows: the content notes it, as popovers close for
+--- a/internal/scene/scene.go
++++ b/internal/scene/scene.go
+@@ -449,6 +449,13 @@
+ 
+ var lastImageID atomic.Uint64
+ 
++// ExternalImage prepares a 2D texture in the renderer's current OpenGL context.
++// The renderer borrows the texture and never deletes it itself.
++type ExternalImage interface {
++	Texture(contextID uint64) uint32
++	Release(contextID uint64)
++}
++
+ // Image is a bitmap a scene draws. Renderers keep a texture per image and
+ // upload it again when its version changes.
+ type Image struct {
+@@ -458,6 +465,10 @@
+ 	// 4*W bytes.
+ 	W, H int
+ 	Pix  []byte
++	// External owns a renderer-context texture instead of CPU pixel storage.
++	External ExternalImage
++	// GPUReady observes texture preparation before the frame composites it.
++	GPUReady func(contextID uint64)
+ 	// Scene, in a canvas (NewCanvas), is what the image shows: renderers
+ 	// draw it into the image's texture whenever the version changes,
+ 	// rather than upload Pix, which the CPU renderer draws it into, and
+@@ -483,6 +494,11 @@
+ 	return &Image{id: lastImageID.Add(1), version: 1, W: w, H: h, Scene: &Scene{Width: w, Height: h, Scale: 1}}
+ }
+ 
++// NewExternalImage keeps the provider separate from CPU image allocations.
++func NewExternalImage(w, h int, provider ExternalImage) *Image {
++	return &Image{id: lastImageID.Add(1), version: 1, W: w, H: h, External: provider}
++}
++
+ // NewImage converts img to a premultiplied RGBA bitmap.
+ func NewImage(img image.Image) *Image {
+ 	b := img.Bounds()
+--- a/internal/surface/surface.go
++++ b/internal/surface/surface.go
+@@ -112,6 +112,9 @@
+ 	// LocaleChanged is called when Locale or Region changed, for the
+ 	// content to build its frame anew.
+ 	LocaleChanged func()
++	// GPUContextID returns the existing renderer context identifier, or zero
++	// when no observable GPU context is active. It performs no rendering.
++	GPUContextID func() uint64
+ 	// Capture renders the content as it is now into premultiplied RGBA.
+ 	Capture func() (width, height int, rgba []byte)
+ 	// ToggleDevTools opens or closes the content's inspector, for the
+--- a/internal/text/engine.go
++++ b/internal/text/engine.go
+@@ -199,22 +199,38 @@
+ // deadFonts are the native fonts of Fonts found unreachable, to release.
+ type deadFonts struct {
+ 	mu     sync.Mutex
+-	native []uintptr
++	native []*ownedFont
++	owned  map[*ownedFont]struct{}
++	closed bool
++}
++
++// ownedFont records one native reference, even when another Font owns the
++// same native address. It never refers back to the Go Font it cleans up.
++type ownedFont struct {
++	native  uintptr
++	cleanup runtime.Cleanup
+ }
+ 
+ // own has the native font of f released once f is unreachable.
+ func (n *nativeFonts) own(f *Font) {
+ 	if n.dead == nil {
+-		n.dead = &deadFonts{}
+-	}
+-	runtime.AddCleanup(f, n.dead.add, f.native)
++		n.dead = &deadFonts{owned: map[*ownedFont]struct{}{}}
++	}
++	owned := &ownedFont{native: f.native}
++	n.dead.mu.Lock()
++	n.dead.owned[owned] = struct{}{}
++	n.dead.mu.Unlock()
++	owned.cleanup = runtime.AddCleanup(f, n.dead.add, owned)
++	runtime.KeepAlive(f)
+ }
+ 
+ // add runs on the runtime's cleanup goroutine: the native font waits for
+ // releaseDead, as engines run with the System's lock held.
+-func (d *deadFonts) add(native uintptr) {
++func (d *deadFonts) add(owned *ownedFont) {
+ 	d.mu.Lock()
+-	d.native = append(d.native, native)
++	if !d.closed && owned.native != 0 {
++		d.native = append(d.native, owned)
++	}
+ 	d.mu.Unlock()
+ }
+ 
+@@ -225,11 +241,43 @@
+ 		return
+ 	}
+ 	n.dead.mu.Lock()
+-	dead := n.dead.native
++	var dead []uintptr
++	for _, owned := range n.dead.native {
++		if owned.native != 0 {
++			dead = append(dead, owned.native)
++			owned.native = 0
++			delete(n.dead.owned, owned)
++		}
++	}
+ 	n.dead.native = nil
+ 	n.dead.mu.Unlock()
+ 	for _, native := range dead {
+ 		release(native)
++	}
++}
++
++// closeFonts retires every native reference without waiting for garbage
++// collection. The caller holds the System lock, after native text work
++// has stopped. Late cleanup callbacks observe the retired registry only.
++func (n *nativeFonts) closeFonts(release func(native uintptr)) {
++	if n.dead == nil {
++		return
++	}
++	n.dead.mu.Lock()
++	n.dead.closed = true
++	var owned []ownedFont
++	for font := range n.dead.owned {
++		owned = append(owned, *font)
++		font.native = 0
++	}
++	clear(n.dead.owned)
++	n.dead.native = nil
++	n.dead.mu.Unlock()
++	for _, font := range owned {
++		font.cleanup.Stop()
++		if font.native != 0 {
++			release(font.native)
++		}
+ 	}
+ }
+ 
+--- a/internal/text/layout.go
++++ b/internal/text/layout.go
+@@ -397,8 +397,9 @@
+ // System lays out text and rasterizes glyphs with the system's own text
+ // engine. Use Shared.
+ type System struct {
+-	mu  sync.Mutex
+-	eng engine
++	mu     sync.Mutex
++	eng    engine
++	closed bool
+ 	// uiFamily is the family system-ui stands for where the engine does
+ 	// not know it (SetUIFamily), and rendering the desktop's settings for
+ 	// rasterizing text, if the app gave them (SetFontRendering).
+--- a/internal/text/pango_linux.go
++++ b/internal/text/pango_linux.go
+@@ -469,6 +469,10 @@
+ 	if err := loadPango(); err != nil {
+ 		return nil, err
+ 	}
++	return createPango()
++}
++
++func createPango() (*pangoEngine, error) {
+ 	l := &pangoLib
+ 	e := &pangoEngine{
+ 		descs:       map[Style]uintptr{},
+@@ -489,6 +493,10 @@
+ 		return nil, errors.New("pango_cairo_font_map_new failed")
+ 	}
+ 	e.context = l.fontMapCreateContext(e.fontMap)
++	if e.context == 0 {
++		l.gObjectUnref(e.fontMap)
++		return nil, errors.New("pango_font_map_create_context failed")
++	}
+ 	pinLCDFilter()
+ 	// Until the app has the desktop's settings, GDK's defaults on X11
+ 	// without a settings daemon: grayscale antialiasing, medium hinting.
+@@ -1015,6 +1023,9 @@
+ 	sf := l.cairoScaledFontCreate(l.cairoScaledFontFace(src), &m, &identity, opts)
+ 	l.cairoFontOptionsDestroy(opts)
+ 	if sf == 0 || l.cairoScaledFontStatus(sf) != cairoStatusSuccess {
++		if sf != 0 {
++			l.cairoScaledFontDestroy(sf)
++		}
+ 		return 0
+ 	}
+ 	e.scaled[key] = sf
+@@ -1512,3 +1523,22 @@
+ 
+ // releaseFonts releases the Pango fonts of the Fonts nothing refers to.
+ func (e *pangoEngine) releaseFonts() { e.releaseDead(pangoLib.gObjectUnref) }
++
++// shutdown releases only this engine's owners. GTK's font maps and the
++// process-global Fontconfig configuration may still serve other users.
++func (e *pangoEngine) shutdown() {
++	e.forgetFonts()
++	for _, description := range e.descs {
++		pangoLib.descFree(description)
++	}
++	clear(e.descs)
++	e.closeFonts(pangoLib.gObjectUnref)
++	if e.context != 0 {
++		pangoLib.gObjectUnref(e.context)
++		e.context = 0
++	}
++	if e.fontMap != 0 {
++		pangoLib.gObjectUnref(e.fontMap)
++		e.fontMap = 0
++	}
++}
+--- /dev/null
++++ b/internal/text/pango_shutdown_linux_test.go
+@@ -0,0 +1,73 @@
++//go:build linux && (amd64 || arm64)
++
++package text
++
++import (
++	"reflect"
++	"runtime"
++	"testing"
++)
++
++func TestPangoContextFailureReleasesFontMap(t *testing.T) {
++	previous := pangoLib
++	t.Cleanup(func() { pangoLib = previous })
++	pangoLib.fontMapNew = func() uintptr { return 17 }
++	pangoLib.fontMapCreateContext = func(fontMap uintptr) uintptr { return 0 }
++	var released []uintptr
++	pangoLib.gObjectUnref = func(native uintptr) { released = append(released, native) }
++	if engine, err := createPango(); engine != nil || err == nil {
++		t.Fatal("context allocation failure did not reject the engine")
++	}
++	if !reflect.DeepEqual(released, []uintptr{17}) {
++		t.Fatalf("released owners %v", released)
++	}
++}
++
++func TestPangoCairoErrorFontIsDestroyed(t *testing.T) {
++	previous := pangoLib
++	t.Cleanup(func() { pangoLib = previous })
++	pangoLib.fontGetScaledFont = func(uintptr) uintptr { return 1 }
++	pangoLib.cairoScaledFontMatrix = func(uintptr, *cairoMatrix) {}
++	pangoLib.cairoFontOptionsCreate = func() uintptr { return 2 }
++	pangoLib.cairoScaledFontOptions = func(uintptr, uintptr) {}
++	pangoLib.cairoScaledFontFace = func(uintptr) uintptr { return 3 }
++	pangoLib.cairoScaledFontCreate = func(uintptr, *cairoMatrix, *cairoMatrix, uintptr) uintptr { return 4 }
++	pangoLib.cairoFontOptionsDestroy = func(uintptr) {}
++	pangoLib.cairoScaledFontStatus = func(uintptr) int32 { return 1 }
++	var released []uintptr
++	pangoLib.cairoScaledFontDestroy = func(native uintptr) { released = append(released, native) }
++	engine := &pangoEngine{scaled: map[scaledKey]uintptr{}}
++	if font := engine.scaledFont(&Font{native: 7}, 1, false); font != 0 {
++		t.Fatal("Cairo error font was returned to the caller")
++	}
++	if !reflect.DeepEqual(released, []uintptr{4}) || len(engine.scaled) != 0 {
++		t.Fatalf("error font owners released %v; cache contains %d entries", released, len(engine.scaled))
++	}
++}
++
++func TestPangoShutdownReleasesOnlyOwnedResourcesOnce(t *testing.T) {
++	previous := pangoLib
++	t.Cleanup(func() { pangoLib = previous })
++	var released []uintptr
++	pangoLib.gObjectUnref = func(native uintptr) { released = append(released, native) }
++	pangoLib.descFree = func(native uintptr) { released = append(released, native) }
++	pangoLib.cairoScaledFontDestroy = func(native uintptr) { released = append(released, native) }
++	font := &Font{native: 3}
++	engine := &pangoEngine{
++		fontMap: 5,
++		context: 4,
++		descs:   map[Style]uintptr{{}: 2},
++		scaled:  map[scaledKey]uintptr{{font: font}: 1},
++		fonts:   map[uintptr]*Font{3: font},
++	}
++	engine.own(font)
++	engine.shutdown()
++	engine.shutdown()
++	if !reflect.DeepEqual(released, []uintptr{1, 2, 3, 4, 5}) {
++		t.Fatalf("native owner release order %v", released)
++	}
++	if engine.context != 0 || engine.fontMap != 0 {
++		t.Fatal("closed native handles remain usable")
++	}
++	runtime.KeepAlive(font)
++}
+--- /dev/null
++++ b/internal/text/shutdown.go
+@@ -0,0 +1,34 @@
++package text
++
++// Shutdown permanently stops this text system. Callers must first stop
++// its windows and background text users. The System lock also serializes
++// a preload started before window teardown. A delayed preload then uses
++// the fontless engine instead of reopening native resources.
++func (s *System) Shutdown() {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	if s.closed {
++		return
++	}
++	s.closed = true
++	previous := s.eng
++	s.eng = &stubEngine{}
++	s.gen++
++	s.familiesGen++
++	s.families, s.listed = nil, false
++	s.clearLayouts()
++	clear(s.fonts)
++	clear(s.marks)
++	clear(s.glyphs)
++	clear(s.places)
++	clear(s.runs)
++	clear(s.masks)
++	clear(s.transient)
++	clear(s.recent)
++	clear(s.outGlyphs)
++	clear(s.outRuns)
++	clear(s.outMasks)
++	if engine, ok := previous.(interface{ shutdown() }); ok {
++		engine.shutdown()
++	}
++}
+--- /dev/null
++++ b/internal/text/shutdown_test.go
+@@ -0,0 +1,144 @@
++package text
++
++import (
++	"runtime"
++	"sync"
++	"testing"
++)
++
++func TestNativeFontsShutdownOwnsEachReference(t *testing.T) {
++	var fonts nativeFonts
++	first, second := &Font{native: 7}, &Font{native: 7}
++	fonts.own(first)
++	fonts.own(second)
++	var pending []*ownedFont
++	for font := range fonts.dead.owned {
++		pending = append(pending, font)
++	}
++	released := 0
++	fonts.closeFonts(func(native uintptr) {
++		if native != 7 {
++			t.Fatalf("released unexpected native font %d", native)
++		}
++		released++
++	})
++	for _, font := range pending {
++		fonts.dead.add(font)
++	}
++	fonts.releaseDead(func(uintptr) { t.Fatal("late cleanup released an owner twice") })
++	fonts.closeFonts(func(uintptr) { t.Fatal("repeated shutdown released an owner twice") })
++	if released != 2 || len(fonts.dead.owned) != 0 || len(fonts.dead.native) != 0 {
++		t.Fatalf("released %d references; retained %d owners and %d queued callbacks", released, len(fonts.dead.owned), len(fonts.dead.native))
++	}
++	runtime.KeepAlive(first)
++	runtime.KeepAlive(second)
++}
++
++func TestNativeFontsConcurrentLateCleanup(t *testing.T) {
++	var fonts nativeFonts
++	const count = 256
++	keep := make([]*Font, count)
++	for index := range keep {
++		keep[index] = &Font{native: uintptr(index + 1)}
++		fonts.own(keep[index])
++	}
++	var pending []*ownedFont
++	for font := range fonts.dead.owned {
++		pending = append(pending, font)
++	}
++	start := make(chan struct{})
++	var callbacks sync.WaitGroup
++	for _, font := range pending {
++		callbacks.Go(func() {
++			<-start
++			fonts.dead.add(font)
++		})
++	}
++	close(start)
++	released := map[uintptr]int{}
++	fonts.closeFonts(func(native uintptr) { released[native]++ })
++	callbacks.Wait()
++	fonts.releaseDead(func(uintptr) { t.Fatal("shutdown left an unreleased queued callback") })
++	if len(released) != count {
++		t.Fatalf("released %d of %d owners", len(released), count)
++	}
++	for native, count := range released {
++		if count != 1 {
++			t.Fatalf("font %d released %d times", native, count)
++		}
++	}
++	runtime.KeepAlive(keep)
++}
++
++func TestNativeFontsNormalRetirementBeforeShutdown(t *testing.T) {
++	var fonts nativeFonts
++	keep := &Font{native: 19}
++	fonts.own(keep)
++	for font := range fonts.dead.owned {
++		fonts.dead.add(font)
++	}
++	released := 0
++	fonts.releaseDead(func(uintptr) { released++ })
++	fonts.closeFonts(func(uintptr) { t.Fatal("retired reference was released twice") })
++	if released != 1 {
++		t.Fatalf("normal retirement released %d references", released)
++	}
++	runtime.KeepAlive(keep)
++}
++
++type shutdownEngine struct {
++	stubEngine
++	started chan struct{}
++	resume  chan struct{}
++	closed  int
++}
++
++func (engine *shutdownEngine) font(style Style) *Font {
++	close(engine.started)
++	<-engine.resume
++	return engine.stubEngine.font(style)
++}
++
++func (engine *shutdownEngine) shutdown() { engine.closed++ }
++
++func TestShutdownSerializesPreloadAndStaysClosed(t *testing.T) {
++	system := newSystem()
++	engine := &shutdownEngine{started: make(chan struct{}), resume: make(chan struct{})}
++	system.eng = engine
++	preloaded := make(chan struct{})
++	go func() {
++		system.Preload()
++		close(preloaded)
++	}()
++	<-engine.started
++	stopped := make(chan struct{})
++	go func() {
++		system.Shutdown()
++		close(stopped)
++	}()
++	close(engine.resume)
++	<-preloaded
++	<-stopped
++	if engine.closed != 1 {
++		t.Fatalf("native engine shut down %d times", engine.closed)
++	}
++	generation := system.Generation()
++	system.Preload()
++	system.Shape(Params{Text: "after shutdown"})
++	system.Shutdown()
++	if engine.closed != 1 || generation != system.Generation() {
++		t.Fatal("repeated shutdown changed terminal state")
++	}
++	if _, ok := system.eng.(*stubEngine); !ok {
++		t.Fatal("delayed text work reopened a native engine")
++	}
++}
++
++func TestShutdownWithoutNativeEngine(t *testing.T) {
++	system := newSystem()
++	system.Shutdown()
++	system.Preload()
++	if _, ok := system.eng.(*stubEngine); !ok {
++		t.Fatal("unused text shutdown initialized a native engine")
++	}
++}
+--- /dev/null
++++ b/native_shutdown.go
+@@ -0,0 +1,23 @@
++package mygo
++
++import "errors"
++
++// ShutdownNative releases platform resources after Run has returned and
++// all native clients have stopped. It must run on the main goroutine.
++// Shutdown is terminal and repeated calls are harmless. Platforms without
++// explicit native shutdown keep their existing process-lifetime behavior.
++func (a *Application) ShutdownNative() error {
++	if !isMainThread() {
++		return errors.New("mygo: native shutdown must run on the main goroutine")
++	}
++	if !a.initialized {
++		return nil
++	}
++	if !a.ended {
++		return errors.New("mygo: native shutdown requires App.Run to have returned")
++	}
++	if shutdown, ok := backend().(interface{ ShutdownNative() error }); ok {
++		return shutdown.ShutdownNative()
++	}
++	return nil
++}
+--- a/ui/bitmap.go
++++ b/ui/bitmap.go
+@@ -45,7 +45,8 @@
+ 	// it, and nil once it no longer does: a weak reference, which keeps
+ 	// nothing, for ReleasePixels to convert it again from (#1281). nil for
+ 	// an image of a type of its own, and other bitmaps.
+-	source func() image.Image
++	source   func() image.Image
++	gpuReady func(contextID uint64)
+ }
+ 
+ // Pixelated draws the bitmap's pixels as squares of their colors where it
+@@ -61,6 +62,64 @@
+ 	return b
+ }
+ 
++// ExternalImage supplies a premultiplied RGBA GL_TEXTURE_2D in the current
++// OpenGL renderer context. Texture and Release run on the UI thread with that
++// context current. The provider must restore every GL state it changes,
++// including the framebuffer, before returning. The renderer borrows the texture.
++// Context identifiers are unique for each renderer context lifetime.
++//
++// A provider retaining native resources must also implement Abandon(uint64).
++// That optional method releases non-GL ownership after unexpected context loss;
++// it must not delete texture names belonging to the lost context.
++// External images currently require the OpenGL renderer. Applications retain
++// responsibility for a CPU fallback when that renderer is unavailable.
++type ExternalImage interface {
++	Texture(contextID uint64) uint32
++	Release(contextID uint64)
++}
++
++// NewExternalBitmap preserves GPU ownership without allocating CPU RGBA pixels.
++// Its methods follow Bitmap.Update's main-thread requirement.
++func NewExternalBitmap(width, height int, provider ExternalImage) *Bitmap {
++	if width <= 0 || height <= 0 || provider == nil {
++		panic("ui: external bitmap requires positive dimensions and a provider")
++	}
++	enableExternalImageBackend()
++	return &Bitmap{img: scene.NewExternalImage(width, height, provider), w: width, h: height}
++}
++
++// InvalidateExternal marks newly prepared external content for partial redraw.
++func (b *Bitmap) InvalidateExternal() {
++	if b != nil && b.img.External != nil {
++		b.img.Changed()
++	}
++}
++
++// ReleaseExternal retires the provider before scenes stop referencing its image.
++// Each renderer releases its resources on its next frame or context teardown.
++func (b *Bitmap) ReleaseExternal() {
++	if b != nil && b.img.External != nil {
++		b.img.External = nil
++		b.img.Changed()
++	}
++}
++
++// SetGPUReadyCallback observes an uploaded or externally prepared image before
++// UI compositing. It runs with the renderer context current and must preserve GL
++// state. It may run repeatedly for an unchanged image or in several contexts.
++func (b *Bitmap) SetGPUReadyCallback(callback func(contextID uint64)) {
++	if b == nil {
++		return
++	}
++	if callback != nil {
++		enableExternalImageBackend()
++	}
++	b.gpuReady, b.img.GPUReady = callback, callback
++	for _, level := range b.levels {
++		level.GPUReady = callback
++	}
++}
++
+ // NewBitmap converts img. The bitmap keeps no reference to img, unless
+ // ReleasePixels has it convert img again when it needs the pixels.
+ func NewBitmap(img image.Image) *Bitmap {
+@@ -164,8 +223,12 @@
+ 		}
+ 	}
+ 	s := scene.NewImage(img)
+-	if s.W == b.img.W && s.H == b.img.H {
++	s.GPUReady = b.gpuReady
++	wasExternal := b.img.External != nil
++	b.ReleaseExternal()
++	if !wasExternal && s.W == b.img.W && s.H == b.img.H {
+ 		b.img.Pix = s.Pix
++		b.img.GPUReady = b.gpuReady
+ 		b.img.Changed()
+ 	} else {
+ 		b.img = s
+@@ -254,8 +317,8 @@
+ // sampling a bitmap far larger than it shows sees only some of its
+ // pixels, which shimmer, where a level averages them all.
+ func (b *Bitmap) smaller(shrink float32) *scene.Image {
+-	if b.img.Scene != nil {
+-		return b.img // a canvas, whose pixels the GPU keeps
++	if b.img.Scene != nil || b.img.External != nil {
++		return b.img // GPU-owned images cannot be downsampled through CPU pixels.
+ 	}
+ 	if shrink < 2 {
+ 		return b.img
+@@ -269,6 +332,7 @@
+ 				return img
+ 			}
+ 			lvl := halve(img)
++			lvl.GPUReady = b.gpuReady
+ 			if b.released {
+ 				lvl.Restore, lvl.Dropped = b.levelPix(i), func() { lvl.Pix = nil }
+ 				// The level was made of the previous image's pixels:
+--- /dev/null
++++ b/ui/bitmap_external_linux.go
+@@ -0,0 +1,7 @@
++//go:build linux && (amd64 || arm64)
++
++package ui
++
++import "github.com/egoist/mygo/internal/gpu/gl"
++
++func enableExternalImageBackend() { gl.EnableExternalImages() }
+--- /dev/null
++++ b/ui/bitmap_external_other.go
+@@ -0,0 +1,5 @@
++//go:build !linux || (!amd64 && !arm64)
++
++package ui
++
++func enableExternalImageBackend() {}
+--- /dev/null
++++ b/ui/bitmap_external_test.go
+@@ -0,0 +1,39 @@
++package ui
++
++import (
++	"image"
++	"testing"
++)
++
++type bitmapExternalTestImage struct{}
++
++func (*bitmapExternalTestImage) Texture(uint64) uint32 { return 1 }
++func (*bitmapExternalTestImage) Release(uint64)        {}
++
++func TestExternalBitmapSkipsCPUDownsamplingAndRetiresOnUpdate(t *testing.T) {
++	provider := &bitmapExternalTestImage{}
++	bitmap := NewExternalBitmap(3840, 2160, provider)
++	original := bitmap.img
++	if selected := bitmap.smaller(12); selected != original || len(bitmap.levels) != 0 || selected.Pix != nil {
++		t.Fatal("external bitmap allocated CPU downsample pixels")
++	}
++	version := original.Version()
++	bitmap.InvalidateExternal()
++	if original.Version() == version {
++		t.Fatal("external update did not invalidate image damage")
++	}
++	var readyContext uint64
++	bitmap.SetGPUReadyCallback(func(contextID uint64) { readyContext = contextID })
++	bitmap.Update(image.NewRGBA(image.Rect(0, 0, 4, 4)))
++	if original.External != nil || bitmap.img.External != nil || bitmap.img == original {
++		t.Fatal("CPU fallback retained the external provider")
++	}
++	selected := bitmap.smaller(2)
++	if selected.GPUReady == nil {
++		t.Fatal("CPU fallback's downsampled image lost the GPU-ready callback")
++	}
++	selected.GPUReady(19)
++	if readyContext != 19 {
++		t.Fatal("CPU fallback did not preserve GPU-ready instrumentation")
++	}
++}
+--- /dev/null
++++ b/ui/gpu_context_test.go
+@@ -0,0 +1,38 @@
++package ui
++
++import (
++	"testing"
++
++	"github.com/egoist/mygo/internal/scene"
++)
++
++type unobservedContextRenderer struct{}
++
++func (*unobservedContextRenderer) Render(*scene.Scene) error { return nil }
++func (*unobservedContextRenderer) Release()                  {}
++
++type observedContextRenderer struct {
++	unobservedContextRenderer
++	identifier uint64
++}
++
++func (renderer *observedContextRenderer) ContextID() uint64 { return renderer.identifier }
++
++func TestGPUContextIDObservesExistingRenderer(t *testing.T) {
++	host := &windowHost{}
++	if host.gpuContextID() != 0 {
++		t.Fatal("an absent renderer reported a context")
++	}
++	host.gpu = &unobservedContextRenderer{}
++	if host.gpuContextID() != 0 {
++		t.Fatal("a renderer without context observation reported an identifier")
++	}
++	host.gpu = &observedContextRenderer{identifier: 41}
++	if host.gpuContextID() != 41 {
++		t.Fatal("context observation changed the renderer identifier")
++	}
++	host.detached = true
++	if host.gpuContextID() != 0 {
++		t.Fatal("detached content retained an observable context")
++	}
++}
+--- a/ui/gpu_linux.go
++++ b/ui/gpu_linux.go
+@@ -39,3 +39,9 @@
+ 	gl.MakeAreaCurrent(r.area)
+ 	return r.Renderer.Render(s)
+ }
++
++// Release switches back to the area's context before deleting external images.
++func (r *areaRenderer) Release() {
++	gl.MakeAreaCurrent(r.area)
++	r.Renderer.Release()
++}
+--- /dev/null
++++ b/ui/text_shutdown.go
+@@ -0,0 +1,9 @@
++package ui
++
++import "github.com/egoist/mygo/internal/text"
++
++// ShutdownText permanently stops the shared text system and releases its
++// Linux Pango resources. Call it after the application event loop returns
++// and all windows and background text users have stopped. Later text work
++// uses a fontless fallback and cannot reopen the native engine.
++func ShutdownText() { text.Shared().Shutdown() }
+--- a/ui/window.go
++++ b/ui/window.go
+@@ -93,6 +93,7 @@
+ 		h.textLanguage()
+ 		rt.changed()
+ 	}
++	conn.GPUContextID = h.gpuContextID
+ 	conn.Capture = h.capture
+ 	conn.Detach = h.detach
+ 	if conn.ContentSize != nil && conn.FitWidth != nil {
+@@ -308,12 +309,29 @@
+ 
+ func (h *windowHost) rightToLeft() bool { return h.conn.RightToLeft != nil && h.conn.RightToLeft() }
+ 
++func (h *windowHost) gpuContextID() uint64 {
++	if !h.detached && h.gpu != nil {
++		if renderer, okay := h.gpu.(interface{ ContextID() uint64 }); okay {
++			return renderer.ContextID()
++		}
++	}
++	return 0
++}
++
+ // newGPU makes the GPU renderer of a surface; tests replace it.
+ var newGPU = newGPURenderer
+ 
+ // event handles an event of the surface, noting when it asks for a frame:
+ // only then may renderers draw (OpenGL's context is current only then).
+ func (h *windowHost) event(ev platform.SurfaceEvent) bool {
++	if ev.Kind == platform.SurfaceGPURelease {
++		if h.gpu != nil {
++			h.gpu.Release()
++			h.gpu = nil
++		}
++		h.gpuTried, h.retryAt = false, time.Time{}
++		return false
++	}
+ 	if h.detached {
+ 		return false // the window closed: it draws nothing more
+ 	}

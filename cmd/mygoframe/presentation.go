@@ -96,6 +96,9 @@ func (presentation *presentationWindow) view(context *ui.Context) {
 		presentation.displayedBitmap = false
 		presentation.displayedSequence = 0
 		if bitmap := application.bitmap; bitmap != nil {
+			if !application.canPresentFrame(painter) {
+				return
+			}
 			width, height := bitmap.Size()
 			painter.ImageRegion(bitmap, ui.Rect{}, fitVideoRectangle(bounds, width, height), ui.ImageOptions{})
 			presentation.displayedBitmap = true

@@ -25,6 +25,35 @@ Files: vendor/golang.org/*
 Copyright: 2009 The Go Authors
 License: BSD-3-Clause
 
+Files: native/patches/gdk-*
+       native/patches/gtk-*
+Copyright: The GTK Team and the upstream copyright holders
+License: LGPL-2+
+Comment: The patched GDK runtime is a separate shared library. Full per-file
+ attribution and additional upstream terms are retained in
+ native/notices/GTK-3.24.52-copyright and the exact upstream source archive.
+
+Files: native/patches/fcitx-*
+Copyright: 2012-2026 CSSlayer and the Fcitx contributors
+License: LGPL-2.1+
+
+Files: native/patches/kde-*
+Copyright: 2020 Carson Black <uhhadd@gmail.com>
+           2020 Mikhail Zolotukhin <zomial@protonmail.com>
+License: GPL-2 or GPL-3 or KDE-Accepted-GPL
+Comment: These GTK modules remain separate dynamically loaded components.
+ Complete upstream license texts and source provenance are retained in
+ native/notices/KDE-* and the exact kde-gtk-config source archive.
+
+Files: native-inputs/*
+       native/notices/*
+Copyright: The upstream copyright holders identified in the accompanying notices
+License: multiple-upstream
+Comment: These are unmodified compressed source inputs and complete upstream
+ license and copyright records. They retain their per-file upstream terms.
+ The package installs the corresponding source inputs, local patches, lock,
+ build helper, and full notices in /usr/share/doc/mygoframe/native-source/.
+
 Files: debian/runtime-notices/*
 Copyright: Apple Inc. and the Swift project authors
  Unicode, Inc. and ICU contributors
@@ -86,6 +115,49 @@ License: BSD-3-Clause
 License: Apache-2.0
  On Debian systems the full Apache License, Version 2.0 is available in
  /usr/share/common-licenses/Apache-2.0.
+
+License: LGPL-2+
+ This library is free software; you can redistribute it and/or modify it
+ under the terms of the GNU Library General Public License as published by
+ the Free Software Foundation; either version 2 of the License, or
+ (at your option) any later version.
+ .
+ The full license text is retained in native/notices/GTK-COPYING and
+ installed under native-source/native/notices/ in the package documentation.
+ Debian also provides version 2 in /usr/share/common-licenses/LGPL-2.
+
+License: LGPL-2.1+
+ This library is free software; you can redistribute it and/or modify it
+ under the terms of the GNU Lesser General Public License as published by
+ the Free Software Foundation; either version 2.1 of the License, or
+ (at your option) any later version.
+ .
+ The full license text is retained in
+ native/notices/Fcitx-LGPL-2.1-or-later.txt and installed under
+ native-source/native/notices/ in the package documentation.
+ Debian also provides version 2.1 in /usr/share/common-licenses/LGPL-2.1.
+
+License: multiple-upstream
+ The full per-file copyright and license records are reproduced in
+ native/notices/GTK-3.24.52-copyright and native/notices/Fcitx-5.1.7-copyright.
+ The KDE module copyright and license identifiers remain in their original
+ source headers; complete license texts are retained in native/notices/KDE-*.
+ The original source archives retain their own notices and license files.
+
+License: GPL-2
+ This component may be redistributed or modified under version 2 of the
+ GNU General Public License. Complete terms are retained in
+ native/notices/KDE-GPL-2.0-only.txt and /usr/share/common-licenses/GPL-2.
+
+License: GPL-3
+ This component may be redistributed or modified under version 3 of the
+ GNU General Public License. Complete terms are retained in
+ native/notices/KDE-GPL-3.0-only.txt and /usr/share/common-licenses/GPL-3.
+
+License: KDE-Accepted-GPL
+ The additional license choices accepted by KDE are reproduced in full in
+ native/notices/KDE-LicenseRef-KDE-Accepted-GPL.txt and included in the
+ installed native source bundle.
 
 License: Apache-2.0-with-Swift-exception
  The Apache License, Version 2.0 is available in

@@ -18,13 +18,26 @@ struct VideoConfiguration {
     let intervalNumerator: UInt32
     let intervalDenominator: UInt32
     let colorRange: Int32
+    let backend: Int32
+    let fallbackReason: String
 }
 
 private final class VideoSession {
     let handle: UnsafeMutableRawPointer
+    let usesDMA: Bool
 
-    init(handle: UnsafeMutableRawPointer) { self.handle = handle }
-    deinit { mgfr_video_destroy(handle) }
+    init(handle: UnsafeMutableRawPointer, usesDMA: Bool) {
+        self.handle = handle
+        self.usesDMA = usesDMA
+    }
+
+    func readStatus(_ output: UnsafeMutablePointer<mgfr_video_status_data>) -> Int32 {
+        usesDMA ? mgfr_dma_video_status(handle, output) : mgfr_video_status(handle, output)
+    }
+
+    deinit {
+        if usesDMA { mgfr_dma_video_destroy(handle) } else { mgfr_video_destroy(handle) }
+    }
 }
 
 private final class AudioSession {
@@ -68,6 +81,7 @@ final class CaptureEngine {
     private var video: VideoSession?
     private var audio: AudioSession?
     private var videoError = ""
+    private var fallbackReason = ""
     private var videoDetails: [String: Any] = [:]
     private var frames: UInt64 = 0
     private var droppedFrames: UInt64 = 0
@@ -76,6 +90,7 @@ final class CaptureEngine {
     func startVideo(_ configuration: VideoConfiguration) throws {
         stopVideo()
         videoError = ""
+        fallbackReason = configuration.fallbackReason
         videoDetails = [:]
         frames = 0
         droppedFrames = 0
@@ -88,8 +103,19 @@ final class CaptureEngine {
         nativeConfiguration.color_range = configuration.colorRange
         var information = mgfr_video_info()
         var failure: UnsafeMutablePointer<CChar>?
-        let handle = configuration.path.withCString { path in
+        var usesDMA = false
+        let handle = configuration.path.withCString { path -> UnsafeMutableRawPointer? in
             nativeConfiguration.path = path
+            if configuration.backend != 1 && configuration.fourcc == 0x3231564e {
+                if let dma = mgfr_dma_video_create(&nativeConfiguration, &information, &failure) {
+                    usesDMA = true
+                    return dma
+                }
+                fallbackReason = rustError(failure)
+                failure = nil
+            } else if configuration.backend == 2 {
+                fallbackReason = "DMA-BUF requires a supported NV12 SDR format."
+            }
             return mgfr_video_create(&nativeConfiguration, &information, &failure)
         }
         guard let handle else {
@@ -97,9 +123,11 @@ final class CaptureEngine {
             throw CoreError.message(videoError)
         }
         if let failure { mgfr_string_free(failure) }
-        video = VideoSession(handle: handle)
+        video = VideoSession(handle: handle, usesDMA: usesDMA)
         videoDetails = [
             "path": configuration.path,
+            "backend": usesDMA ? "dmabuf" : "cpu",
+            "fallbackReason": fallbackReason,
             "fourcc": information.fourcc,
             "format": formatName(information.fourcc),
             "width": information.width,
@@ -119,7 +147,7 @@ final class CaptureEngine {
     func stopVideo() {
         if let video {
             var snapshot = mgfr_video_status_data()
-            if mgfr_video_status(video.handle, &snapshot) == 1 {
+            if video.readStatus(&snapshot) == 1 {
                 frames = snapshot.frames
                 droppedFrames = snapshot.dropped_frames
                 let message = fixedString(snapshot.error)
@@ -130,7 +158,7 @@ final class CaptureEngine {
     }
 
     func acquire(after sequence: UInt64, output: UnsafeMutablePointer<mgf_frame_view>) -> Int32 {
-        guard let video else { return 0 }
+        guard let video, !video.usesDMA else { return 0 }
         var frame = mgfr_frame_view()
         guard mgfr_video_acquire(video.handle, sequence, &frame) == 1 else { return 0 }
         let width = Int(frame.width)
@@ -146,6 +174,21 @@ final class CaptureEngine {
         output.pointee = mgf_frame_view(token: token, pixels: pixels, byte_length: frame.byte_length,
             width: frame.width, height: frame.height, stride: frame.stride,
             sequence: frame.sequence, timestamp_ns: frame.timestamp_ns)
+        return 1
+    }
+
+    func acquireDMA(after sequence: UInt64, output: UnsafeMutablePointer<mgfr_dma_frame_view>) -> Int32 {
+        guard let video, video.usesDMA else { return 0 }
+        var frame = mgfr_dma_frame_view()
+        let result = mgfr_dma_video_acquire(video.handle, sequence, &frame)
+        guard result == 1 else { return result }
+        guard frame.abi_version == 1, frame.struct_size >= MemoryLayout<mgfr_dma_frame_view>.size,
+              frame.token != nil, frame.fd >= 0, frame.width > 0, frame.height > 0,
+              frame.width <= 16384, frame.height <= 16384 else {
+            mgfr_dma_video_release(frame.token)
+            return -1
+        }
+        output.pointee = frame
         return 1
     }
 
@@ -174,7 +217,7 @@ final class CaptureEngine {
         var videoRunning = false
         if let video {
             var snapshot = mgfr_video_status_data()
-            if mgfr_video_status(video.handle, &snapshot) == 1 {
+            if video.readStatus(&snapshot) == 1 {
                 videoRunning = snapshot.running != 0
                 frames = snapshot.frames
                 droppedFrames = snapshot.dropped_frames
@@ -213,6 +256,8 @@ final class CaptureEngine {
             "frames": frames,
             "droppedFrames": droppedFrames,
             "video": videoDetails,
+            "videoBackend": videoDetails["backend"] ?? "stopped",
+            "fallbackReason": fallbackReason,
             "audio": audioStatus,
             "volume": volume
         ]
@@ -271,15 +316,24 @@ public func audioDevices() -> UnsafeMutablePointer<CChar>? {
 public func startVideo(_ pointer: UnsafeMutableRawPointer?, _ path: UnsafePointer<CChar>?,
                        _ fourcc: UInt32, _ width: UInt32, _ height: UInt32,
                        _ numerator: UInt32, _ denominator: UInt32, _ range: Int32) -> UnsafeMutablePointer<CChar>? {
+    startVideoBackend(pointer, path, fourcc, width, height, numerator, denominator, range, 1, nil)
+}
+
+@_cdecl("mgf_start_video_backend")
+public func startVideoBackend(_ pointer: UnsafeMutableRawPointer?, _ path: UnsafePointer<CChar>?,
+                              _ fourcc: UInt32, _ width: UInt32, _ height: UInt32,
+                              _ numerator: UInt32, _ denominator: UInt32, _ range: Int32,
+                              _ backend: Int32, _ fallback: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
     guard let pointer, let path else { return strdup("An engine and video device path are required.") }
     guard width > 0, height > 0, width <= 16384, height <= 16384,
-          numerator > 0, denominator > 0, (0...2).contains(range) else {
-        return strdup("Invalid video dimensions, frame interval, or color range.")
+          numerator > 0, denominator > 0, (0...2).contains(range), (0...2).contains(backend) else {
+        return strdup("Invalid video dimensions, frame interval, color range, or backend.")
     }
     do {
         try engine(pointer).startVideo(VideoConfiguration(path: String(cString: path), fourcc: fourcc,
             width: width, height: height, intervalNumerator: numerator,
-            intervalDenominator: denominator, colorRange: range))
+            intervalDenominator: denominator, colorRange: range, backend: backend,
+            fallbackReason: fallback.map { String(cString: $0) } ?? ""))
         return nil
     } catch { return strdup(String(describing: error)) }
 }
@@ -294,6 +348,18 @@ public func acquireFrame(_ pointer: UnsafeMutableRawPointer?, _ sequence: UInt64
                          _ output: UnsafeMutablePointer<mgf_frame_view>?) -> Int32 {
     guard let pointer, let output else { return 0 }
     return engine(pointer).acquire(after: sequence, output: output)
+}
+
+@_cdecl("mgf_acquire_dma_frame")
+public func acquireDMAFrame(_ pointer: UnsafeMutableRawPointer?, _ sequence: UInt64,
+                            _ output: UnsafeMutablePointer<mgfr_dma_frame_view>?) -> Int32 {
+    guard let pointer, let output else { return 0 }
+    return engine(pointer).acquireDMA(after: sequence, output: output)
+}
+
+@_cdecl("mgf_release_dma_frame")
+public func releaseDMAFrame(_ pointer: UnsafeMutableRawPointer?) {
+    mgfr_dma_video_release(pointer)
 }
 
 @_cdecl("mgf_release_frame")

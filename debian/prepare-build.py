@@ -9,6 +9,9 @@ import shutil
 import subprocess
 
 root = Path.cwd()
+subprocess.run([
+    "python3", "tools/prepare-native-runtime.py", "--download-only", "--offline"
+], check=True)
 if not (root / "vendor/modules.txt").is_file():
     raise SystemExit("Missing vendored Go sources. Prepare the source package with make deb.")
 compiler = os.environ.get("SWIFTC", "")
