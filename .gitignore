@@ -1,0 +1,5 @@
+/build/
+/core/rust/target/
+/work/
+*.core
+core.*

@@ -1,0 +1,7 @@
+module NativeCore {
+    header "mygoframe.h"
+    header "video.h"
+    header "audio.h"
+    header "rust_core.h"
+    export *
+}
