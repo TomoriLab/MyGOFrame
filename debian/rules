@@ -1,0 +1,52 @@
+#!/usr/bin/make -f
+
+include /usr/share/dpkg/architecture.mk
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+include /usr/share/dpkg/buildflags.mk
+export CGO_CFLAGS = $(CFLAGS) $(CPPFLAGS)
+export CGO_LDFLAGS = $(LDFLAGS)
+export GOPROXY = off
+export GOSUMDB = off
+export GOTOOLCHAIN = local
+export GOFLAGS = -mod=vendor
+export CARGO_NET_OFFLINE = true
+export RUSTFLAGS = -C link-arg=-Wl,-z,relro,-z,now --remap-path-prefix=$(CURDIR)=.
+export SWIFTC ?= $(shell command -v swiftc 2>/dev/null || test ! -x "$$HOME/.local/share/swiftly/bin/swiftc" || echo "$$HOME/.local/share/swiftly/bin/swiftc")
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	python3 debian/prepare-build.py
+
+override_dh_auto_build:
+	$(MAKE) CARGO_FLAGS='--offline --locked' GO_BUILD_FLAGS='-buildmode=pie -buildvcs=false' SWIFT_EXTRA_FLAGS='-static-stdlib -use-ld=lld -debug-prefix-map $(CURDIR)=. -Xlinker -z -Xlinker relro -Xlinker -z -Xlinker now'
+	go run ./tools/package-assets --output build/mygoframe.png
+
+override_dh_auto_test:
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+	$(MAKE) test CARGO_FLAGS='--offline --locked' GO_BUILD_FLAGS='-buildmode=pie -buildvcs=false' SWIFT_EXTRA_FLAGS='-static-stdlib'
+endif
+
+override_dh_auto_install:
+	install -D -m755 build/mygoframe debian/mygoframe/usr/bin/mygoframe
+	install -D -m644 build/libmygoframe_core.so debian/mygoframe/usr/lib/$(DEB_HOST_MULTIARCH)/mygoframe/libmygoframe_core.so
+	install -D -m644 build/libmygoframe_media.so debian/mygoframe/usr/lib/$(DEB_HOST_MULTIARCH)/mygoframe/libmygoframe_media.so
+	patchelf --set-rpath '$$ORIGIN/../lib/$(DEB_HOST_MULTIARCH)/mygoframe' debian/mygoframe/usr/bin/mygoframe
+	patchelf --set-rpath '$$ORIGIN' debian/mygoframe/usr/lib/$(DEB_HOST_MULTIARCH)/mygoframe/libmygoframe_core.so
+	install -D -m644 debian/mygoframe.desktop debian/mygoframe/usr/share/applications/mygoframe.desktop
+	install -D -m644 debian/mygoframe.metainfo.xml debian/mygoframe/usr/share/metainfo/dev.tomori.mygoframe.metainfo.xml
+	install -D -m644 build/mygoframe.png debian/mygoframe/usr/share/icons/hicolor/512x512/apps/mygoframe.png
+
+override_dh_shlibdeps:
+	dh_shlibdeps -l$(CURDIR)/debian/mygoframe/usr/lib/$(DEB_HOST_MULTIARCH)/mygoframe
+
+override_dh_gencontrol:
+	dh_gencontrol -- -Vmisc:Static-Built-Using="$$(cat debian/go-static-built-using)"
+
+override_dh_dwz:
+	# Go and Swift emit DWARF sections unsupported by dwz; dh_strip retains their debug symbols.
+	dh_dwz --no-dwz-multifile -Xusr/bin/mygoframe -Xlibmygoframe_core.so
+
+override_dh_auto_clean:
+	$(MAKE) clean

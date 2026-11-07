@@ -3,3 +3,12 @@
 /work/
 *.core
 core.*
+__pycache__/
+/debian/.debhelper/
+/debian/mygoframe/
+/debian/mygoframe-dbgsym/
+/debian/third-party/
+/debian/files
+/debian/go-static-built-using
+/debian/*.debhelper.log
+/debian/*.substvars

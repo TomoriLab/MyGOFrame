@@ -1,6 +1,6 @@
 # Development and agent documentation
 
-Read [Architecture and memory ownership](architecture.md) before changing the Go, Swift, or Rust boundaries. Use [Verification](verification.md) to select checks for the affected behavior. The root [README](../README.md) documents installation and application use.
+Read [Architecture and memory ownership](architecture.md) before changing the Go, Swift, or Rust boundaries. Use [Verification](verification.md) to select checks for the affected behavior. Use [Debian packaging](debian.md) to build and validate local Debian packages. The root [README](../README.md) documents installation and application use.
 
 ## Source layout
 

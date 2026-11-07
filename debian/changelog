@@ -1,0 +1,7 @@
+mygoframe (0.1.0-1) unstable; urgency=medium
+
+  * Initial local Debian packaging.
+  * Install the native viewer, private media libraries, and desktop assets.
+  * Link the Swift runtime statically and preserve third-party notices.
+
+ -- Euiseo Cha <escha@zeroday0619.dev>  Sat, 07 Nov 2026 17:30:00 +0900

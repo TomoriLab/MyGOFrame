@@ -1,0 +1,5 @@
+# The complete preferred TypeScript sources and build.ts are included in the
+# vendor/github.com/egoist/mygo/packages/bridge directory in the orig tarball.
+# Lintian's JavaScript lookup does not follow the upstream TypeScript layout.
+mygoframe source: source-is-missing [vendor/github.com/egoist/mygo/internal/bridge/bridge.js]
+mygoframe source: source-is-missing [vendor/github.com/egoist/mygo/internal/windows/keys.js]

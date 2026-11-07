@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.tomori.mygoframe</id>
+  <name>MyGOFrame</name>
+  <summary>Play console games through a capture-card preview</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="dev.tomori">
+    <name>TomoriLab</name>
+  </developer>
+  <description>
+    <p>
+      MyGOFrame displays a V4L2 capture device in a native window and monitors
+      a selected PipeWire audio input through your speakers or headphones.
+    </p>
+    <p>
+      Select the video format, resolution, frame rate, and input color range.
+      Adjust audio monitoring volume or open a separate video-only window
+      for application sharing. The preview preserves the video aspect ratio
+      when either window is resized.
+    </p>
+  </description>
+  <launchable type="desktop-id">mygoframe.desktop</launchable>
+  <icon type="stock">mygoframe</icon>
+  <url type="homepage">https://github.com/TomoriLab/MyGOFrame</url>
+  <url type="bugtracker">https://github.com/TomoriLab/MyGOFrame/issues</url>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Video</category>
+  </categories>
+  <provides>
+    <binary>mygoframe</binary>
+  </provides>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-11-07" type="development" />
+  </releases>
+</component>

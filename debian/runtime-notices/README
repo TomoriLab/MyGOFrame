@@ -1,0 +1,15 @@
+Release-matched license notices for the statically linked Swift runtime.
+
+Swift 6.3.3 release sources:
+https://raw.githubusercontent.com/swiftlang/swift/swift-6.3.3-RELEASE/LICENSE.txt
+https://raw.githubusercontent.com/swiftlang/swift-foundation/swift-6.3.3-RELEASE/LICENSE.md
+https://raw.githubusercontent.com/swiftlang/swift-foundation/swift-6.3.3-RELEASE/NOTICE.txt
+https://raw.githubusercontent.com/swiftlang/swift-corelibs-foundation/swift-6.3.3-RELEASE/LICENSE
+https://raw.githubusercontent.com/swiftlang/swift-corelibs-libdispatch/swift-6.3.3-RELEASE/LICENSE
+https://raw.githubusercontent.com/swiftlang/swift-foundation-icu/swift-6.3.3-RELEASE/LICENSE.md
+
+The Foundation ICU runtime in this release reports version 76.1.0.0:
+https://raw.githubusercontent.com/unicode-org/icu/release-76-1/LICENSE
+
+The original license and notice texts are preserved without edits. Update
+the notices and compiler-version check together when changing toolchains.

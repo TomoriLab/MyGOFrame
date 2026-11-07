@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MyGOFrame
+Comment=Low-latency capture-card viewer
+Exec=mygoframe
+Icon=mygoframe
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=capture;console;V4L2;PipeWire;
+StartupWMClass=mygoframe
+

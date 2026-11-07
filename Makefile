@@ -2,6 +2,9 @@ SHELL := /bin/bash
 SWIFTC ?= $(shell command -v swiftc 2>/dev/null || test ! -x "$$HOME/.local/share/swiftly/bin/swiftc" || echo "$$HOME/.local/share/swiftly/bin/swiftc")
 GO ?= go
 CARGO ?= cargo
+CARGO_FLAGS ?=
+GO_BUILD_FLAGS ?=
+SWIFT_EXTRA_FLAGS ?=
 RUST_TARGET_DIR := $(CURDIR)/build/rust-target
 AUDIO_SOURCE ?=
 export AUDIO_SOURCE
@@ -17,7 +20,7 @@ RUST_SOURCES := $(shell rg --files core/rust -g '*.rs' -g 'Cargo.toml')
 RUST_ASAN := RUSTC_BOOTSTRAP=1 RUSTFLAGS='-Zsanitizer=address -C link-arg=-fuse-ld=lld' CARGO_TARGET_DIR='$(CURDIR)/build/rust-asan-target' ASAN_OPTIONS='detect_leaks=1:halt_on_error=1:abort_on_error=1' LSAN_OPTIONS='exitcode=23:report_objects=1'
 HEADERS := $(wildcard core/include/*)
 
-.PHONY: all core run install-desktop test test-race test-sanitize test-thread-sanitize test-audio-integration check-dependencies clean
+.PHONY: all core run deb install-desktop test test-race test-sanitize test-thread-sanitize test-audio-integration check-dependencies clean
 all: build/mygoframe
 core: build/libmygoframe_core.so
 
@@ -33,17 +36,20 @@ build:
 	mkdir -p build
 
 build/libmygoframe_media.so: $(RUST_SOURCES) $(HEADERS) Makefile | build
-	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" $(CARGO) build --manifest-path core/rust/Cargo.toml --release
+	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" $(CARGO) build --manifest-path core/rust/Cargo.toml --release $(CARGO_FLAGS)
 	cp "$(RUST_TARGET_DIR)/release/libmygoframe_media.so" $@
 
 build/libmygoframe_core.so: build/libmygoframe_media.so $(SWIFT_SOURCES) $(HEADERS) Makefile | build
-	"$(SWIFTC)" $(SWIFT_FLAGS) -emit-library -module-name MyGOFrameCore $(SWIFT_SOURCES) -L build -lmygoframe_media -Xlinker -rpath -Xlinker '$$ORIGIN' -o $@
+	"$(SWIFTC)" $(SWIFT_FLAGS) $(SWIFT_EXTRA_FLAGS) -emit-library -module-name MyGOFrameCore $(SWIFT_SOURCES) -L build -lmygoframe_media -Xlinker -rpath -Xlinker '$$ORIGIN' -o $@
 
 build/mygoframe: build/libmygoframe_core.so $(shell rg --files cmd internal -g '*.go' -g '*.png') go.mod go.sum
-	CGO_ENABLED=1 $(GO) build -trimpath -o $@ ./cmd/mygoframe
+	CGO_ENABLED=1 $(GO) build -trimpath $(GO_BUILD_FLAGS) -o $@ ./cmd/mygoframe
 
 run: all
 	./build/mygoframe
+
+deb:
+	python3 tools/build-debian.py
 
 install-desktop: all
 	$(GO) run ./tools/install-desktop

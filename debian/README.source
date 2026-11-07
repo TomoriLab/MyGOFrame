@@ -1,0 +1,37 @@
+MyGOFrame local Debian source package
+====================================
+
+This packaging targets the Debian release and native architecture used to
+build it. The initial binary was validated on Debian sid amd64. FFmpeg ABI
+requirements are generated from that system; this is not a Debian stable
+binary or an official Debian archive upload.
+
+Run `make deb` from a checkout. tools/build-debian.py copies the source into
+an isolated directory, vendors the exact go.mod/go.sum module versions from
+the existing Go cache, prepares an orig tarball, and calls dpkg-buildpackage.
+The build itself disables network module and Cargo access. Populate the Go
+module cache with `go mod download` first if dependencies are not cached.
+
+The pkg.mygoframe.external-toolchains build profile permits an externally
+installed Swift 6.3.3 compiler. Debian's `swift` package is OpenStack storage
+and is unrelated. Install the official Swift Linux toolchain and set SWIFTC
+if it is not on PATH or installed through Swiftly. The toolchain version is
+pinned to match the included Swift and ICU runtime notices. The package does not
+require the compiler or a Swift installation at runtime. Rust 2024 support
+is required; Debian rustc/cargo or an installed rustup toolchain can be used.
+
+To rebuild the prepared source package:
+
+  dpkg-source -x mygoframe_0.1.0-1.dsc
+  cd mygoframe-0.1.0
+  DEB_BUILD_PROFILES=pkg.mygoframe.external-toolchains dpkg-buildpackage -b -us -uc
+
+The Go executable and Swift facade are built with hardening flags. Swift
+standard and Foundation libraries are linked statically into the private
+facade. FFmpeg, PipeWire, GTK, and graphics libraries remain system runtime
+dependencies. The package includes Swift, Foundation, ICU, Go, and vendored
+module license notices under /usr/share/doc/mygoframe/third-party/.
+
+The clean target removes generated files only. It preserves the vendor
+snapshot shipped in the orig tarball. No maintainer script changes device
+permissions, user groups, or per-user application settings.

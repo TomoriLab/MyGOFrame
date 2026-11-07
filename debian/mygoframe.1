@@ -1,0 +1,145 @@
+.TH MYGOFRAME 1 "2026-11-07" "MyGOFrame 0.1.0" "User Commands"
+.SH NAME
+mygoframe \- view capture-card video and monitor capture-card audio
+.SH SYNOPSIS
+.B mygoframe
+.RI [ options ]
+.SH DESCRIPTION
+.B MyGOFrame
+is a native graphical viewer for V4L2 capture devices.
+It provides video format, resolution, frame rate, and color range selection.
+PipeWire audio inputs can be monitored through the default or a selected output.
+Audio monitoring is disabled until an input is selected.
+.PP
+The preview preserves the captured video's aspect ratio.
+A separate capture window provides video-only content for application sharing.
+Press F11 to toggle fullscreen and Escape to leave fullscreen.
+.SH OPTIONS
+.TP
+.B \-h, \-help
+Display command-line help.
+.TP
+.B \-capture-window
+Open a separate video-only window when the graphical interface starts.
+.TP
+.BI \-window-width " pixels"
+Set the initial window content width in logical pixels.
+The default is 1280 and the minimum is 320.
+.TP
+.BI \-window-height " pixels"
+Set the initial window content height in logical pixels.
+The default is 800 and the minimum is 240.
+.TP
+.B \-list
+Print V4L2 devices and PipeWire input and output nodes as JSON.
+.TP
+.BI \-probe " device"
+Print supported video modes for a V4L2 device as JSON.
+.TP
+.BI \-smoke-video " device"
+Capture video without opening a window and report stream status as JSON.
+.TP
+.BI \-smoke-audio " source"
+Monitor a PipeWire source without opening a window and report stream status.
+Use a source node identifier returned by
+.BR \-list .
+Monitoring is silent unless
+.B \-volume
+is set above zero.
+.TP
+.BI \-output " node"
+Select a PipeWire output for an audio check.
+An empty value selects the system default.
+.TP
+.BI \-format " fourcc"
+Select a four-character V4L2 pixel format for a video check.
+The default is NV12.
+.TP
+.BI \-width " pixels"
+Set the video check width.
+The default is 640.
+.TP
+.BI \-height " pixels"
+Set the video check height.
+The default is 480.
+.TP
+.BI \-fps " rate"
+Set the video check frame rate as a decimal or fraction, such as 60000/1001.
+The default is 60.
+.TP
+.BI \-seconds " duration"
+Set the duration of a video or audio check in seconds.
+The default is 2 and the maximum is 3600.
+.TP
+.BI \-volume " percent"
+Set audio check volume from 0 to 100.
+The default is 0.
+.TP
+.BI \-smoke-ui-video " device"
+Display a capture device in the graphical interface.
+Requires a positive
+.BR \-smoke-ui-seconds .
+.TP
+.B \-smoke-ui-pattern
+Display a synthetic border and colored corners instead of opening a capture device.
+Requires a positive
+.BR \-smoke-ui-seconds .
+The
+.B \-width
+and
+.B \-height
+options select the pattern dimensions.
+.TP
+.BI \-smoke-ui-seconds " duration"
+Close the graphical interface after the specified number of seconds.
+The default is 0, which leaves it open.
+.TP
+.BI \-smoke-capture-window-cycles " count"
+Close and reopen the capture window during a timed graphical check.
+Requires
+.B \-capture-window
+and enough
+.B \-smoke-ui-seconds
+for at least one second per cycle plus one.
+The maximum is 16.
+.SH EXAMPLES
+List available devices:
+.PP
+.nf
+.RS
+mygoframe --list
+.RE
+.fi
+.PP
+Inspect a video device:
+.PP
+.nf
+.RS
+mygoframe --probe /dev/video0
+.RE
+.fi
+.PP
+Open the graphical interface with a separate sharing window:
+.PP
+.nf
+.RS
+mygoframe --capture-window
+.RE
+.fi
+.SH NOTES
+Video capture uses the V4L2 single-planar streaming interface.
+Supported formats are YUYV, UYVY, NV12, P010, BGR24, RGB24, and MJPEG.
+HDR output and tone mapping are not implemented.
+Video and audio checks temporarily open the selected devices.
+.PP
+PipeWire graph latency and capture-card buffering depend on the active hardware
+and session configuration.
+Reported frame counters do not measure input-to-display or input-to-speaker latency.
+.SH EXIT STATUS
+.B 0
+indicates success.
+A nonzero status indicates an argument, device, capture, or graphical startup error.
+.SH SEE ALSO
+.BR pipewire (1),
+.BR v4l2-ctl (1)
+

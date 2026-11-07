@@ -16,6 +16,16 @@ Supported video formats are YUYV, UYVY, NV12, P010, BGR24, RGB24, and MJPEG. The
 
 For devices exposing continuous or stepwise capabilities, the menus include supported common modes and valid range endpoints. They do not enumerate every possible resolution or frame interval.
 
+## Debian package
+
+A local Debian sid amd64 package can be built with `make deb`. Install the result with:
+
+```sh
+sudo apt install ./build/debian/mygoframe_0.1.0-1_amd64.deb
+```
+
+The package includes the Swift runtime and installs a desktop launcher. Build requirements, source rebuilding, and verification are documented in [Debian packaging](docs/debian.md).
+
 ## Build and run
 
 Requirements:
