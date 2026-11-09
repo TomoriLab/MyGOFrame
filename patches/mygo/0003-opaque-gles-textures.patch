@@ -1,0 +1,53 @@
+--- a/internal/linux/surface.go
++++ b/internal/linux/surface.go
+@@ -295,9 +295,9 @@
+ // testGLDamage, when set, sees each area damageGLPaint damages.
+ var testGLDamage func(w *window, r image.Rectangle)
+ 
+-// glAreaNeedsTexture preserves GPU composition on GTK 3's GLES backend.
+-func glAreaNeedsTexture(transparent bool, api string) bool {
+-	return transparent || strings.EqualFold(api, "gles")
++// glAreaNeedsAlpha preserves compatible composition and native transparency.
++func glAreaNeedsAlpha(transparent bool, api string, opaqueTextures bool) bool {
++	return transparent || (strings.EqualFold(api, "gles") && !opaqueTextures)
+ }
+ 
+ // newArea creates the native drawing widget and connects its input.
+@@ -312,11 +312,10 @@
+ 		} else {
+ 			gtkGLAreaSetRequiredVersion(s.area, 3, 3)
+ 		}
+-		// GTK 3 recognizes only an extension for GLES renderbuffer blits, even
+-		// when GLES 3 provides them in core. A texture keeps opaque GLES areas
+-		// on GDK's GPU composition path instead of reading the full frame to CPU.
+-		// The native window's transparency still follows its window options.
+-		gtkGLAreaSetHasAlpha(s.area, glAreaNeedsTexture(s.w.opts.Transparent, os.Getenv("MYGO_GL_API")))
++		// A verified GTK uses RGB textures for opaque GLES areas, avoiding the
++		// CPU background upload needed for alpha blending. Older runtimes keep
++		// the RGBA texture fallback that prevents software renderbuffer readback.
++		gtkGLAreaSetHasAlpha(s.area, glAreaNeedsAlpha(s.w.opts.Transparent, os.Getenv("MYGO_GL_API"), os.Getenv("MYGO_GL_GLES_OPAQUE_TEXTURE") == "1"))
+ 		// GTK keeps the area's last frame as it paints the window, and
+ 		// renders it again only as the content asks (queueDraw): rendering
+ 		// on every paint, its default, built a frame for each one a web view
+--- a/internal/linux/presentation_schedule_test.go
++++ b/internal/linux/presentation_schedule_test.go
+@@ -6,12 +6,13 @@
+ 
+ func TestGLFrameTextureSelection(t *testing.T) {
+ 	for _, scenario := range []struct {
+-		transparent bool
+-		api         string
+-		texture     bool
+-	}{{false, "gles", true}, {false, "GLES", true}, {true, "", true}, {false, "", false}} {
+-		if got := glAreaNeedsTexture(scenario.transparent, scenario.api); got != scenario.texture {
+-			t.Fatalf("transparency=%v API=%q selected texture=%v", scenario.transparent, scenario.api, got)
++		transparent    bool
++		api            string
++		opaqueTextures bool
++		texture        bool
++	}{{false, "gles", false, true}, {false, "GLES", false, true}, {true, "", false, true}, {false, "", false, false}, {false, "gles", true, false}, {true, "gles", true, true}, {false, "", true, false}} {
++		if got := glAreaNeedsAlpha(scenario.transparent, scenario.api, scenario.opaqueTextures); got != scenario.texture {
++			t.Fatalf("transparency=%v API=%q selected alpha=%v", scenario.transparent, scenario.api, got)
+ 		}
+ 	}
+ }

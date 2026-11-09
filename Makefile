@@ -9,7 +9,8 @@ NATIVE_RUNTIME_FLAGS ?=
 MYGO_GO := GO="$(GO)" python3 tools/go-mygoframe.py
 MYGO_TEXT_OWNERSHIP_TESTS := ^Test(NativeFontsShutdownOwnsEachReference|NativeFontsConcurrentLateCleanup|NativeFontsNormalRetirementBeforeShutdown|ShutdownSerializesPreloadAndStaysClosed|ShutdownWithoutNativeEngine|PangoContextFailureReleasesFontMap|PangoCairoErrorFontIsDestroyed|PangoShutdownReleasesOnlyOwnedResourcesOnce)$$
 MYGO_VARIANT_OWNERSHIP_TESTS := ^TestVariant(ReplyTypeSurvivesSyncCallAndIsReleased|ReplyTypeReleasedOnCallError|PortalSettingsReleasesElementAndReplyTypes|PortalLookupReleasesTypeOnMissingValue|NotificationTypesAndNoUnusedEmptyArray|ShowItemReleasesReply|BusErrorConsumesOnlyFloatingParameters)$$
-MYGO_NATIVE_SHUTDOWN_TESTS := ^TestNativeShutdown(ClosesDisplayOnceAfterClearingContext|RejectsActiveOwners|WithoutDisplayDoesNotInitializeGraphics|WithoutGTKDoesNotLoadLibraries|DisconnectsOwnedSignalsBeforeDisplayClose|BalancesFailedAndMissingSignalOwners)$$
+MYGO_NATIVE_SHUTDOWN_TESTS := ^TestNativeShutdown(ClosesDisplayOnceAfterClearingContext|RejectsActiveOwners|WithoutDisplayDoesNotInitializeGraphics|WithoutGTKDoesNotLoadLibraries|DisconnectsOwnedSignalsBeforeDisplayClose|BalancesFailedAndMissingSignalOwners|ReportsFontconfigFailure)$$
+MYGO_PRESENTATION_TESTS := ^TestGLFrame(TextureSelection|RequestsCoalesceBeforePaint)$$
 RUST_TARGET_DIR := $(CURDIR)/build/rust-target
 AUDIO_SOURCE ?=
 export AUDIO_SOURCE
@@ -19,7 +20,7 @@ PACKAGES := libpipewire-0.3 libavcodec libavutil libswscale
 NATIVE_LIBS := $(shell pkg-config --libs $(PACKAGES)) -lpthread -lm
 SWIFT_IMPORT_FLAGS := -I core/include $(foreach option,$(shell pkg-config --cflags $(PACKAGES)),-Xcc $(option))
 SWIFT_FLAGS := -swift-version 6 -O -g $(SWIFT_IMPORT_FLAGS)
-SWIFT_SOURCES := core/swift/Engine.swift
+SWIFT_SOURCES := $(wildcard core/swift/*.swift)
 CORE_TEST_SOURCES := tests/legacy/swift/Audio.swift tests/legacy/swift/AudioRing.swift tests/legacy/swift/FramePool.swift tests/legacy/swift/PixelConverter.swift tests/legacy/swift/Video.swift
 RUST_SOURCES := $(shell rg --files core/rust -g '*.rs' -g 'Cargo.toml')
 RUST_ASAN := RUSTC_BOOTSTRAP=1 RUSTFLAGS='-Zsanitizer=address -C link-arg=-fuse-ld=lld' CARGO_TARGET_DIR='$(CURDIR)/build/rust-asan-target' ASAN_OPTIONS='detect_leaks=1:halt_on_error=1:abort_on_error=1' LSAN_OPTIONS='exitcode=23:report_objects=1'
@@ -74,7 +75,11 @@ build/video-tests: $(CORE_TEST_SOURCES) tests/video_tests.swift $(HEADERS) Makef
 build/audio-tests: $(CORE_TEST_SOURCES) tests/audio_tests.swift $(HEADERS) Makefile | build
 	"$(SWIFTC)" $(SWIFT_FLAGS) $(CORE_TEST_SOURCES) tests/audio_tests.swift $(NATIVE_LIBS) -o $@
 
-test: all build/pool-tests build/video-tests build/audio-tests test-mygo-ownership
+build/session-tests: $(SWIFT_SOURCES) tests/session_tests.swift build/libmygoframe_media.so $(HEADERS) Makefile | build
+	"$(SWIFTC)" $(SWIFT_FLAGS) $(SWIFT_SOURCES) tests/session_tests.swift -L build -lmygoframe_media -Xlinker -rpath -Xlinker '$$ORIGIN' -o $@
+
+test: all build/pool-tests build/video-tests build/audio-tests build/session-tests test-mygo-ownership
+	./build/session-tests
 	python3 -m unittest discover -s tests -p 'test_*.py'
 	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" $(CARGO) test --manifest-path core/rust/Cargo.toml
 	./build/pool-tests
@@ -89,12 +94,12 @@ test-race: all test-mygo-ownership-race
 test-mygo-ownership:
 	CGO_ENABLED=0 $(MYGO_GO) test github.com/egoist/mygo/internal/text -run '$(MYGO_TEXT_OWNERSHIP_TESTS)' -count=1
 	CGO_ENABLED=0 $(MYGO_GO) test github.com/egoist/mygo/internal/linux -run '$(MYGO_VARIANT_OWNERSHIP_TESTS)' -count=1
-	CGO_ENABLED=0 $(MYGO_GO) test github.com/egoist/mygo/internal/linux -run '$(MYGO_NATIVE_SHUTDOWN_TESTS)' -count=1
+	CGO_ENABLED=0 $(MYGO_GO) test github.com/egoist/mygo/internal/linux -run '$(MYGO_NATIVE_SHUTDOWN_TESTS)|$(MYGO_PRESENTATION_TESTS)' -count=1
 
 test-mygo-ownership-race:
 	CGO_ENABLED=1 $(MYGO_GO) test -race github.com/egoist/mygo/internal/text -run '$(MYGO_TEXT_OWNERSHIP_TESTS)' -count=1
 	CGO_ENABLED=1 $(MYGO_GO) test -race github.com/egoist/mygo/internal/linux -run '$(MYGO_VARIANT_OWNERSHIP_TESTS)' -count=1
-	CGO_ENABLED=1 $(MYGO_GO) test -race github.com/egoist/mygo/internal/linux -run '$(MYGO_NATIVE_SHUTDOWN_TESTS)' -count=1
+	CGO_ENABLED=1 $(MYGO_GO) test -race github.com/egoist/mygo/internal/linux -run '$(MYGO_NATIVE_SHUTDOWN_TESTS)|$(MYGO_PRESENTATION_TESTS)' -count=1
 
 build/video-sanitize: $(CORE_TEST_SOURCES) tests/video_tests.swift $(HEADERS) Makefile | build
 	"$(SWIFTC)" $(SWIFT_FLAGS) -sanitize=address $(CORE_TEST_SOURCES) tests/video_tests.swift $(NATIVE_LIBS) -o build/video-sanitize
@@ -102,7 +107,14 @@ build/video-sanitize: $(CORE_TEST_SOURCES) tests/video_tests.swift $(HEADERS) Ma
 build/audio-sanitize: $(CORE_TEST_SOURCES) tests/audio_tests.swift $(HEADERS) Makefile | build
 	"$(SWIFTC)" $(SWIFT_FLAGS) -sanitize=address $(CORE_TEST_SOURCES) tests/audio_tests.swift $(NATIVE_LIBS) -o build/audio-sanitize
 
-test-sanitize: build/video-sanitize build/audio-sanitize
+build/session-sanitize: $(SWIFT_SOURCES) tests/session_tests.swift build/libmygoframe_media.so $(HEADERS) Makefile | build
+	"$(SWIFTC)" $(SWIFT_FLAGS) -sanitize=address $(SWIFT_SOURCES) tests/session_tests.swift -L build -lmygoframe_media -Xlinker -rpath -Xlinker '$$ORIGIN' -o $@
+
+build/session-thread-sanitize: $(SWIFT_SOURCES) tests/session_tests.swift build/libmygoframe_media.so $(HEADERS) Makefile | build
+	"$(SWIFTC)" $(SWIFT_FLAGS) -sanitize=thread $(SWIFT_SOURCES) tests/session_tests.swift -L build -lmygoframe_media -Xlinker -rpath -Xlinker '$$ORIGIN' -o $@
+
+test-sanitize: build/video-sanitize build/audio-sanitize build/session-sanitize
+	ASAN_OPTIONS='detect_leaks=1:halt_on_error=1' LSAN_OPTIONS='exitcode=23:report_objects=1' ./build/session-sanitize
 	./build/video-sanitize
 	./build/audio-sanitize
 	$(RUST_ASAN) $(CARGO) test --manifest-path core/rust/Cargo.toml --offline --lib
@@ -121,7 +133,8 @@ test-audio-integration: build/audio-sanitize
 		echo 'Rust audio hardware test skipped: set AUDIO_SOURCE to run it.'; \
 	fi
 
-test-thread-sanitize: | build
+test-thread-sanitize: build/session-thread-sanitize | build
+	./build/session-thread-sanitize
 	"$(SWIFTC)" $(SWIFT_FLAGS) -sanitize=thread $(CORE_TEST_SOURCES) tests/audio_tests.swift $(NATIVE_LIBS) -o build/audio-thread-sanitize
 	./build/audio-thread-sanitize
 

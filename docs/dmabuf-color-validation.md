@@ -1,5 +1,7 @@
 # DMA-BUF color validation
 
+This page records the original NV12 validation and coherency investigation. The current renderer also supports other raw formats; see [DMA-BUF formats](dmabuf-formats.md) for the subsequent multi-format validation and current limits.
+
 The production NV12 SDR renderer passed controlled 3840 × 2160 color comparisons for limited and full Rec.709 range on the tested NVIDIA system. Each range used 24 newly acquired frames in one capture session and one GPU renderer. All six capture slots were reused. This validates the sampled conversion and source visibility through the production DMA-BUF renderer; it does not establish HDMI input accuracy or calibrated display output.
 
 ## Tested environment

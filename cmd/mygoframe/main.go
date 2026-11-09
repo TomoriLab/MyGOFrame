@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"maps"
 	"math"
 	"math/big"
 	"os"
@@ -290,7 +289,13 @@ func validatePreview(application *applicationState) error {
 	if application.displayedFrame == nil || application.bitmap == nil {
 		return errors.New("UI check completed without displaying a video frame")
 	}
-	return validateSmokeStatus(application.status, 1, true)
+	if application.status.Error != "" {
+		return errors.New(application.status.Error)
+	}
+	if !application.status.VideoRunning {
+		return errors.New("capture is not running")
+	}
+	return nil
 }
 
 type windowConfiguration struct {
@@ -325,6 +330,7 @@ func runWindow(closeAfter time.Duration, videoConfig *core.VideoConfig, config w
 		application.videoBackend = config.videoBackend
 	}
 	var previewError error
+	var initializationError error
 	var previewStatus map[string]any
 	var windowObservations []map[string]any
 	windowObservationIndex := make(map[*mygo.Window]int)
@@ -372,7 +378,10 @@ func runWindow(closeAfter time.Duration, videoConfig *core.VideoConfig, config w
 		application.window = window
 		application.applyWindowIcon(window)
 		if !config.pattern {
-			application.worker = newWorker(engine, window, application)
+			application.worker, initializationError = newWorker(engine, window, application)
+			if initializationError != nil {
+				application.errorMessage = initializationError.Error()
+			}
 		}
 		var cycleTimers []*time.Timer
 		if closeAfter > 0 {
@@ -384,14 +393,14 @@ func runWindow(closeAfter time.Duration, videoConfig *core.VideoConfig, config w
 			}
 			previewError = nil
 			if videoConfig != nil {
-				currentStatus, statusError := engine.Status()
+				currentStatus, statusError := engine.Snapshot()
 				if statusError != nil {
 					previewError = statusError
 				} else {
 					application.status = currentStatus
 					previewError = validatePreview(application)
 				}
-				previewStatus = maps.Clone(application.status)
+				previewStatus = application.status.JSONMap()
 				if previewStatus == nil {
 					previewStatus = make(map[string]any)
 				}
@@ -463,6 +472,9 @@ func runWindow(closeAfter time.Duration, videoConfig *core.VideoConfig, config w
 	}()
 	if err := mygo.App.Run(); err != nil {
 		return err
+	}
+	if initializationError != nil {
+		return initializationError
 	}
 	if previewError != nil {
 		return previewError

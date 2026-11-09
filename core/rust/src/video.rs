@@ -1,5 +1,8 @@
+#[cfg(test)]
+use crate::frame_pool::MAX_FRAME_BYTES;
+use crate::frame_pool::{BUFFER_COUNT, FramePool, FrameSlot, MAX_DIMENSION, frame_layout};
+use crate::notification::{self, NotificationSlot};
 use crate::{ffi, make_c_string};
-use std::cell::UnsafeCell;
 use std::collections::HashSet;
 use std::ffi::{CStr, c_char, c_void};
 use std::fs::{File, OpenOptions, read_dir};
@@ -11,10 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-const MAX_DIMENSION: u32 = 16_384;
-const MAX_FRAME_BYTES: usize = 128 * 1024 * 1024;
 const SOURCE_PADDING: usize = 64;
-const BUFFER_COUNT: usize = 3;
+
 const CAPTURE_TYPE: u32 = ffi::v4l2_buf_type_V4L2_BUF_TYPE_VIDEO_CAPTURE;
 const MMAP_MEMORY: u32 = ffi::v4l2_memory_V4L2_MEMORY_MMAP;
 const O_NONBLOCK: i32 = 0o4000;
@@ -166,124 +167,8 @@ impl Drop for MappedBuffer {
     }
 }
 
-struct FrameSlot {
-    pixels: UnsafeCell<Box<[u8]>>,
-}
-
-// Pool state prevents a writer while any lease retains the slot.
-unsafe impl Send for FrameSlot {}
-unsafe impl Sync for FrameSlot {}
-
-impl FrameSlot {
-    fn new(length: usize) -> Result<Self, String> {
-        let mut pixels = Vec::new();
-        pixels
-            .try_reserve_exact(length)
-            .map_err(|_| "Unable to allocate the video frame pool.")?;
-        pixels.resize(length, 0);
-        Ok(Self {
-            pixels: UnsafeCell::new(pixels.into_boxed_slice()),
-        })
-    }
-
-    fn address(&self) -> *const u8 {
-        unsafe { (*self.pixels.get()).as_ptr() }
-    }
-
-    fn writable_address(&self) -> *mut u8 {
-        unsafe { (*self.pixels.get()).as_mut_ptr() }
-    }
-}
-
-struct PoolState {
-    latest: Option<usize>,
-    writing: [bool; BUFFER_COUNT],
-    sequence: [u64; BUFFER_COUNT],
-    timestamp: [u64; BUFFER_COUNT],
-}
-
-struct FramePool {
-    slots: Vec<Arc<FrameSlot>>,
-    state: Mutex<PoolState>,
-    width: u32,
-    height: u32,
-    stride: u32,
-    byte_length: usize,
-}
-
-pub(crate) fn frame_layout(width: u32, height: u32) -> Option<(u32, usize)> {
-    if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
-        return None;
-    }
-    let stride = width.checked_mul(4)?;
-    let byte_length = (stride as usize).checked_mul(height as usize)?;
-    (byte_length <= MAX_FRAME_BYTES).then_some((stride, byte_length))
-}
-
-impl FramePool {
-    fn new(width: u32, height: u32) -> Result<Self, String> {
-        let (stride, byte_length) = frame_layout(width, height)
-            .ok_or("Negotiated video dimensions exceed the frame pool limits.")?;
-        let mut slots = Vec::with_capacity(BUFFER_COUNT);
-        for _ in 0..BUFFER_COUNT {
-            slots.push(Arc::new(FrameSlot::new(byte_length)?));
-        }
-        Ok(Self {
-            slots,
-            state: Mutex::new(PoolState {
-                latest: None,
-                writing: [false; BUFFER_COUNT],
-                sequence: [0; BUFFER_COUNT],
-                timestamp: [0; BUFFER_COUNT],
-            }),
-            width,
-            height,
-            stride,
-            byte_length,
-        })
-    }
-
-    fn reserve(&self) -> Option<usize> {
-        let mut state = self.state.lock().unwrap();
-        for index in 0..BUFFER_COUNT {
-            if state.latest != Some(index)
-                && !state.writing[index]
-                && Arc::strong_count(&self.slots[index]) == 1
-            {
-                state.writing[index] = true;
-                return Some(index);
-            }
-        }
-        None
-    }
-
-    fn cancel(&self, index: usize) {
-        self.state.lock().unwrap().writing[index] = false;
-    }
-
-    fn publish(&self, index: usize, sequence: u64, timestamp: u64) {
-        let mut state = self.state.lock().unwrap();
-        state.sequence[index] = sequence;
-        state.timestamp[index] = timestamp;
-        state.writing[index] = false;
-        state.latest = Some(index);
-    }
-
-    fn acquire(&self, after_sequence: u64) -> Option<(Arc<FrameSlot>, u64, u64)> {
-        let state = self.state.lock().unwrap();
-        let index = state.latest?;
-        if state.sequence[index] <= after_sequence {
-            return None;
-        }
-        Some((
-            Arc::clone(&self.slots[index]),
-            state.sequence[index],
-            state.timestamp[index],
-        ))
-    }
-}
-
 struct VideoStatus {
+    notification: NotificationSlot,
     running: AtomicBool,
     stop: AtomicBool,
     frames: AtomicU64,
@@ -687,7 +572,7 @@ pub(crate) fn dma_reference_rgba(
     destination: &mut [u8],
 ) -> Result<(), String> {
     let mut converter = PixelConverter::new(PixelConfiguration {
-        fourcc: NV12,
+        fourcc: view.fourcc,
         width: view.width,
         height: view.height,
         bytes_per_line: view.stride,
@@ -1008,15 +893,11 @@ impl VideoCapture {
 fn capture_worker(mut capture: VideoCapture, pool: Arc<FramePool>, status: Arc<VideoStatus>) {
     let mut sequence = 0_u64;
     while !status.stop.load(Ordering::Acquire) {
-        let Some(index) = pool.reserve() else {
+        let Some(mut reservation) = pool.reserve() else {
             thread::sleep(Duration::from_millis(1));
             continue;
         };
-        // Reservation excludes readers and other writers until the slot is published or cancelled.
-        let destination = unsafe {
-            std::slice::from_raw_parts_mut(pool.slots[index].writable_address(), pool.byte_length)
-        };
-        let result = capture.read_into(destination);
+        let result = capture.read_into(reservation.pixels());
         let dropped_frames = match &result {
             Ok(Some(metadata)) => metadata.dropped_frames,
             _ => std::mem::take(&mut capture.dropped_frames),
@@ -1028,17 +909,18 @@ fn capture_worker(mut capture: VideoCapture, pool: Arc<FramePool>, status: Arc<V
             Ok(Some(metadata)) => {
                 sequence = sequence.wrapping_add(1);
                 status.frames.fetch_add(1, Ordering::Relaxed);
-                pool.publish(index, sequence, metadata.timestamp);
+                reservation.publish(sequence, metadata.timestamp);
+                status.notification.notify();
             }
-            Ok(None) => pool.cancel(index),
+            Ok(None) => {}
             Err(error) => {
-                pool.cancel(index);
                 *status.error.lock().unwrap() = error;
                 break;
             }
         }
     }
     status.running.store(false, Ordering::Release);
+    status.notification.notify();
 }
 
 fn json_string(value: &str) -> String {
@@ -1300,6 +1182,7 @@ pub unsafe extern "C" fn mgfr_video_create(
     };
     let details = capture.info;
     let status = Arc::new(VideoStatus {
+        notification: NotificationSlot::default(),
         running: AtomicBool::new(true),
         stop: AtomicBool::new(false),
         frames: AtomicU64::new(0),
@@ -1476,32 +1359,6 @@ mod tests {
         fn drop(&mut self) {
             unsafe { ffi::munmap(self.mapping.cast(), self.length) };
         }
-    }
-
-    #[test]
-    fn frame_lease_survives_pool_destroy_and_blocks_reuse() {
-        let pool = FramePool::new(2, 2).unwrap();
-        let first = pool.reserve().unwrap();
-        unsafe { *pool.slots[first].writable_address() = 17 };
-        pool.publish(first, 1, 100);
-        let (first_lease, sequence, timestamp) = pool.acquire(0).unwrap();
-        assert_eq!((sequence, timestamp), (1, 100));
-        let second = pool.reserve().unwrap();
-        assert_ne!(first, second);
-        pool.publish(second, 2, 200);
-        let (second_lease, _, _) = pool.acquire(1).unwrap();
-        let third = pool.reserve().unwrap();
-        assert_ne!(third, first);
-        assert_ne!(third, second);
-        pool.publish(third, 3, 300);
-        let (third_lease, _, _) = pool.acquire(2).unwrap();
-        assert!(pool.reserve().is_none());
-        drop(second_lease);
-        assert_eq!(pool.reserve(), Some(second));
-        pool.cancel(second);
-        drop(pool);
-        assert_eq!(unsafe { *first_lease.address() }, 17);
-        drop(third_lease);
     }
 
     #[test]
@@ -1689,4 +1546,21 @@ mod tests {
             Conversion::Discarded(_)
         ));
     }
+}
+
+/// # Safety
+/// Both handles must be live. The caller serializes control against destruction.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgfr_video_set_notification(
+    video: *mut c_void,
+    notification: *mut c_void,
+) {
+    if video.is_null() || notification.is_null() {
+        return;
+    }
+    let engine = unsafe { &*video.cast::<VideoEngine>() };
+    engine
+        .status
+        .notification
+        .attach(unsafe { notification::retain(notification) });
 }

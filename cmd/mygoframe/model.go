@@ -2,81 +2,63 @@ package main
 
 import (
 	"fmt"
-	"slices"
 	"sync"
 
 	"github.com/TomoriLab/MyGOFrame/internal/core"
 )
 
+// modeSelection projects Swift's numeric selection into native control labels.
 type modeSelection struct {
 	modes      []core.VideoMode
 	format     string
 	resolution string
 	frameRate  string
+	resolved   core.ModeSelection
+	failure    error
 }
 
-func unique(values []string) []string {
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		if !slices.Contains(result, value) {
-			result = append(result, value)
-		}
+func (selection *modeSelection) formats() []string { return selection.resolved.Formats }
+func (selection *modeSelection) resolutions() []string {
+	result := make([]string, 0, len(selection.resolved.Resolutions))
+	for _, mode := range selection.resolved.Resolutions {
+		result = append(result, mode.Resolution())
 	}
 	return result
 }
-
-func retainChoice(value string, options []string) string {
-	if slices.Contains(options, value) {
-		return value
-	}
-	if len(options) > 0 {
-		return options[0]
-	}
-	return ""
-}
-
-func (selection *modeSelection) formats() []string {
-	var values []string
-	for _, mode := range selection.modes {
-		values = append(values, mode.Format)
-	}
-	return unique(values)
-}
-
-func (selection *modeSelection) resolutions() []string {
-	var values []string
-	for _, mode := range selection.modes {
-		if mode.Format == selection.format {
-			values = append(values, mode.Resolution())
-		}
-	}
-	return unique(values)
-}
-
 func (selection *modeSelection) frameRates() []string {
-	var values []string
+	result := make([]string, 0, len(selection.resolved.FrameRates))
+	for _, mode := range selection.resolved.FrameRates {
+		result = append(result, mode.FrameRate())
+	}
+	return result
+}
+func (selection *modeSelection) reconcile() {
+	request := core.ModeRequest{Modes: selection.modes, Format: selection.format}
 	for _, mode := range selection.modes {
-		if mode.Format == selection.format && mode.Resolution() == selection.resolution {
-			values = append(values, mode.FrameRate())
+		if mode.Resolution() == selection.resolution {
+			request.Width, request.Height = mode.Width, mode.Height
+		}
+		if mode.FrameRate() == selection.frameRate {
+			request.IntervalNumerator, request.IntervalDenominator = mode.IntervalNumerator, mode.IntervalDenominator
 		}
 	}
-	return unique(values)
+	selection.resolved, selection.failure = core.ResolveModes(request)
+	selection.format, selection.resolution, selection.frameRate = "", "", ""
+	if mode := selection.resolved.Selected; mode != nil {
+		selection.format, selection.resolution, selection.frameRate = mode.Format, mode.Resolution(), mode.FrameRate()
+	}
 }
-
-func (selection *modeSelection) reconcile() {
-	selection.format = retainChoice(selection.format, selection.formats())
-	selection.resolution = retainChoice(selection.resolution, selection.resolutions())
-	selection.frameRate = retainChoice(selection.frameRate, selection.frameRates())
-}
-
 func (selection *modeSelection) setModes(modes []core.VideoMode) {
 	selection.modes = modes
 	selection.reconcile()
 }
-
 func (selection *modeSelection) selected() (core.VideoMode, bool) {
-	for _, mode := range selection.modes {
-		if mode.Format == selection.format && mode.Resolution() == selection.resolution && mode.FrameRate() == selection.frameRate {
+	if selection.failure != nil {
+		return core.VideoMode{}, false
+	}
+	// Native selectors update the label before their change handler runs.
+	for _, mode := range selection.resolved.FrameRates {
+		if mode.FrameRate() == selection.frameRate {
 			return mode, true
 		}
 	}

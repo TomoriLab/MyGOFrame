@@ -6,7 +6,7 @@ MyGOFrame is a Linux capture-card viewer for playing console games through a cap
 
 - Select a V4L2 device, pixel format, resolution, and exact rational frame interval.
 - Select automatic, limited, or full input color range.
-- Use an optional DMA-BUF GPU path for progressive NV12 SDR capture, with automatic CPU fallback.
+- Use a DMA-BUF GPU path for progressive NV12, P010, YUYV, UYVY, BGR24, and RGB24 SDR capture, with automatic CPU fallback.
 - Monitor a selected PipeWire audio input through the default or a selected output.
 - Adjust monitoring volume, mute, and stop audio independently of video.
 - Fit the complete video inside the available viewport while preserving its aspect ratio.
@@ -22,7 +22,7 @@ For devices exposing continuous or stepwise capabilities, the menus include supp
 A local Debian sid amd64 package can be built with `make deb`. Install the result with:
 
 ```sh
-sudo apt install ./build/debian/mygoframe_0.1.0-1_amd64.deb
+sudo apt install ./build/debian/mygoframe_0.1.1-1_amd64.deb
 ```
 
 The package includes the Swift runtime and installs a desktop launcher. Build requirements, source rebuilding, and verification are documented in [Debian packaging](docs/debian.md).
@@ -84,9 +84,11 @@ Window sharing is handled by Discord and the desktop's capture backend. This opt
 
 ## Latency and color
 
-The default `auto` backend tries DMA-BUF for supported NV12 SDR modes. Rust exports V4L2 buffers and converts their Y and UV planes to RGBA on the GPU. Swift owns session selection and restart control. Both native MyGo windows retain independent GPU presentation resources while sharing one capture stream. GPU completion fences keep a capture slot leased until every submitted GPU read has finished.
+The default `auto` backend tries DMA-BUF for progressive NV12, P010, YUYV, UYVY, BGR24 (`BGR3`), and RGB24 (`RGB3`) SDR modes. Rust exports V4L2 buffers and unpacks their source bytes into RGBA on the GPU. Swift owns session selection and restart control. Both native MyGo windows retain independent GPU presentation resources while sharing one capture stream. GPU completion fences keep a capture slot leased until every submitted GPU read has finished. See [DMA-BUF formats](docs/dmabuf-formats.md) for layout restrictions and hardware validation.
 
 Unsupported formats, export failures, incompatible graphics contexts, and GPU preparation failures restart capture through the CPU path. The status displays the active backend and fallback reason. Select the CPU path explicitly with `./build/mygoframe --video-backend cpu`. `--video-backend dma` requests DMA-BUF and still permits CPU fallback; inspect the active backend when validating it. The [benchmark guide](docs/benchmark-video.md) rejects fallback runs when comparing DMA-BUF with CPU rendering.
+
+MJPEG remains on the CPU decoder path. P010 DMA-BUF preserves its ten-bit source samples during conversion but produces an eight-bit SDR preview. HDR tone mapping and HDR display output are not supported.
 
 Video and audio run independently without an added synchronization delay. Capture-card buffering, USB transport, conversion cost, display refresh, the compositor, and audio hardware remain part of end-to-end latency. Use an uncompressed mode that fits the card's USB bandwidth and measure the complete path before relying on it for timing-sensitive play.
 

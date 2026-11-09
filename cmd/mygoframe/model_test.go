@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"image"
 	"sync"
 	"sync/atomic"
@@ -9,6 +10,20 @@ import (
 	"github.com/TomoriLab/MyGOFrame/internal/core"
 	"github.com/egoist/mygo/ui"
 )
+
+func TestRetiredRendererFailureKeepsCurrentPreview(t *testing.T) {
+	application := newApplication()
+	application.status.Generation = 7
+	application.worker = &captureWorker{commands: make(chan command, 1)}
+	application.bitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 4, 4)))
+	bitmap := application.bitmap
+	application.gpuFailure = errors.New("retired renderer failed during restart")
+	application.gpuFailureGeneration = 6
+	application.processGPUFailure()
+	if application.gpuFailure != nil || application.gpuFallbackPending || application.bitmap != bitmap || len(application.worker.commands) != 0 {
+		t.Fatal("a retired renderer changed the current preview or queued recovery")
+	}
+}
 
 func fixtureModes() []core.VideoMode {
 	return []core.VideoMode{
@@ -215,7 +230,7 @@ func TestVideoConfigValidation(t *testing.T) {
 func TestPreviewSmokeRequiresDisplayedLiveFrame(t *testing.T) {
 	application := newApplication()
 	application.running = true
-	application.status = map[string]any{"videoRunning": true}
+	application.status = core.SessionSnapshot{VideoRunning: true}
 	if err := validatePreview(application); err == nil {
 		t.Fatal("accepted capture without a displayed frame")
 	}
@@ -235,8 +250,27 @@ func TestPreviewSmokeRequiresDisplayedLiveFrame(t *testing.T) {
 		t.Fatal("accepted a preview with a runtime error")
 	}
 	application.errorMessage = ""
-	application.status["error"] = "Capture failed"
+	application.status.Error = "Capture failed"
 	if err := validatePreview(application); err == nil {
 		t.Fatal("accepted failed native capture")
+	}
+}
+
+func TestFailedEnumerationPreservesDisplayedChoices(t *testing.T) {
+	application := newApplication()
+	device := core.VideoDevice{Path: "/dev/video0", Name: "Capture"}
+	source := core.AudioDevice{ID: "capture", Name: "Capture audio"}
+	application.devices = []core.VideoDevice{device}
+	application.device = videoLabel(device)
+	application.selection.setModes(fixtureModes())
+	application.audioDevices.Sources = []core.AudioDevice{source}
+	application.audioSource = audioLabel(source)
+	application.applyCatalog(core.DeviceCatalog{Error: "Enumeration failed"}, device.Path)
+	if application.device != videoLabel(device) || application.audioSource != audioLabel(source) || application.selection.format != "NV12" {
+		t.Fatal("failed enumeration discarded valid displayed choices")
+	}
+	application.applyCatalog(core.DeviceCatalog{VideoAvailable: true, AudioAvailable: true}, device.Path)
+	if application.device != "" || application.audioSource != audioOff || application.selection.format != "" {
+		t.Fatal("confirmed device removal retained unavailable choices")
 	}
 }

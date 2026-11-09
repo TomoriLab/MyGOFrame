@@ -1,0 +1,273 @@
+--- a/internal/linux/app.go
++++ b/internal/linux/app.go
+@@ -180,6 +180,11 @@
+ 			gdkDisplayClose(display)
+ 		}
+ 	}
++	// Clearing the current configuration drops only Fontconfig's global reference.
++	// Referenced configurations and font caches remain valid for late native releases.
++	if fcConfigSetCurrent != nil && fcConfigSetCurrent(0) == 0 {
++		return errors.New("mygo: could not release the current Fontconfig configuration")
++	}
+ 	b.nativeClosed = true
+ 	return nil
+ }
+--- a/internal/linux/ffi.go
++++ b/internal/linux/ffi.go
+@@ -187,6 +187,7 @@
+ 	gdkScreenGetRGBAVisual          func(screen ptr) ptr
+ 	gdkDisplayGetDefault            func() ptr
+ 	gdkDisplayClose                 func(display ptr)
++	fcConfigSetCurrent              func(config ptr) int32
+ 	gdkGLContextClearCurrent        func()
+ 	gdkDisplayGetNMonitors          func(d ptr) int32
+ 	gdkDisplayGetMonitor            func(d ptr, i int32) ptr
+@@ -643,6 +644,7 @@
+ 	mustBind(d, &gdkScreenGetRGBAVisual, "gdk_screen_get_rgba_visual")
+ 	mustBind(d, &gdkDisplayGetDefault, "gdk_display_get_default")
+ 	mustBind(d, &gdkDisplayClose, "gdk_display_close")
++	mustBind(libGTK, &fcConfigSetCurrent, "FcConfigSetCurrent")
+ 	mustBind(d, &gdkGLContextClearCurrent, "gdk_gl_context_clear_current")
+ 	mustBind(d, &gdkDisplayGetNMonitors, "gdk_display_get_n_monitors")
+ 	mustBind(d, &gdkDisplayGetMonitor, "gdk_display_get_monitor")
+--- a/internal/linux/native_shutdown_test.go
++++ b/internal/linux/native_shutdown_test.go
+@@ -36,7 +36,7 @@
+ 	if err := backend.shutdownNative(); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	expected := []string{"disconnect:31:1", "disconnect:31:2", "disconnect:47:3", "unref:31", "unref:31", "unref:47", "clear", "close"}
++	expected := []string{"disconnect:31:1", "disconnect:31:2", "disconnect:47:3", "unref:31", "unref:31", "unref:47", "clear", "close", "fontconfig"}
+ 	if !reflect.DeepEqual(*calls, expected) || len(backend.systemSignals) != 0 {
+ 		t.Fatalf("observer cleanup order %v, expected %v", *calls, expected)
+ 	}
+@@ -65,10 +65,19 @@
+ func stubNativeShutdown(t *testing.T) *[]string {
+ 	t.Helper()
+ 	previousDisplay, previousClose, previousCurrent := gdkDisplayGetDefault, gdkDisplayClose, gdkGLContextClearCurrent
++	previousConfig := fcConfigSetCurrent
+ 	t.Cleanup(func() {
+ 		gdkDisplayGetDefault, gdkDisplayClose, gdkGLContextClearCurrent = previousDisplay, previousClose, previousCurrent
++		fcConfigSetCurrent = previousConfig
+ 	})
+ 	calls := new([]string)
++	fcConfigSetCurrent = func(config ptr) int32 {
++		if config != 0 {
++			t.Fatal("terminal shutdown installed a replacement configuration")
++		}
++		*calls = append(*calls, "fontconfig")
++		return 1
++	}
+ 	gdkDisplayGetDefault = func() ptr { return 17 }
+ 	gdkGLContextClearCurrent = func() { *calls = append(*calls, "clear") }
+ 	gdkDisplayClose = func(display ptr) {
+@@ -89,7 +98,7 @@
+ 	if err := backend.shutdownNative(); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	if !reflect.DeepEqual(*calls, []string{"clear", "close"}) {
++	if !reflect.DeepEqual(*calls, []string{"clear", "close", "fontconfig"}) {
+ 		t.Fatalf("native cleanup order %v", *calls)
+ 	}
+ }
+@@ -123,7 +132,7 @@
+ 	if err := backend.shutdownNative(); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	if len(*calls) != 0 || !backend.nativeClosed {
++	if !reflect.DeepEqual(*calls, []string{"fontconfig"}) || !backend.nativeClosed {
+ 		t.Fatal("empty display shutdown changed graphics state")
+ 	}
+ }
+@@ -131,6 +140,7 @@
+ func TestNativeShutdownWithoutGTKDoesNotLoadLibraries(t *testing.T) {
+ 	calls := stubNativeShutdown(t)
+ 	gdkDisplayGetDefault = nil
++	fcConfigSetCurrent = nil
+ 	backend := New()
+ 	if err := backend.shutdownNative(); err != nil {
+ 		t.Fatal(err)
+@@ -139,3 +149,15 @@
+ 		t.Fatal("unused backend shutdown changed graphics state")
+ 	}
+ }
++
++func TestNativeShutdownReportsFontconfigFailure(t *testing.T) {
++	calls := stubNativeShutdown(t)
++	fcConfigSetCurrent = func(config ptr) int32 { return 0 }
++	backend := New()
++	if err := backend.shutdownNative(); err == nil {
++		t.Fatal("Fontconfig failure was ignored")
++	}
++	if backend.nativeClosed || !reflect.DeepEqual(*calls, []string{"clear", "close"}) {
++		t.Fatal("failed shutdown was marked complete")
++	}
++}
+--- a/internal/linux/surface.go
++++ b/internal/linux/surface.go
+@@ -166,9 +166,9 @@
+ 	// renderAgain tells that a frame was asked for during the render
+ 	// signal.
+ 	renderAgain bool
+-	// renderPending tells that a tick callback asks the area to render.
+-	// It is not reset on unrealize: GTK keeps tick callbacks across it.
+-	renderPending bool
++	// renderPending owns the update callback; renderRequested marks actual work.
++	// GTK keeps tick callbacks across unrealize, so both survive that transition.
++	renderPending, renderRequested bool
+ 	// drawn tells that the content's first frame reached the surface
+ 	// (FirstFrame), and hiddenFrame that the first frame of a window
+ 	// hidden, which GTK never paints, waits for its idle callback
+@@ -295,8 +295,12 @@
+ // testGLDamage, when set, sees each area damageGLPaint damages.
+ var testGLDamage func(w *window, r image.Rectangle)
+ 
+-// newArea creates the surface's widget, a GtkGLArea or a GtkDrawingArea
+-// that assistive technology sees the content of, and connects its input.
++// glAreaNeedsTexture preserves GPU composition on GTK 3's GLES backend.
++func glAreaNeedsTexture(transparent bool, api string) bool {
++	return transparent || strings.EqualFold(api, "gles")
++}
++
++// newArea creates the native drawing widget and connects its input.
+ func (s *surface) newArea(gl bool) {
+ 	data := ptr(s.w.id)
+ 	s.area = newSurfaceArea(gl)
+@@ -308,11 +312,11 @@
+ 		} else {
+ 			gtkGLAreaSetRequiredVersion(s.area, 3, 3)
+ 		}
+-		// Only transparent windows show what is behind them. With an alpha
+-		// channel GTK keeps the area in a texture it blends, rather than in
+-		// a renderbuffer it copies, which took a small window 50 MB more of
+-		// the GPU's memory, and an animation half as much CPU again.
+-		gtkGLAreaSetHasAlpha(s.area, s.w.opts.Transparent)
++		// GTK 3 recognizes only an extension for GLES renderbuffer blits, even
++		// when GLES 3 provides them in core. A texture keeps opaque GLES areas
++		// on GDK's GPU composition path instead of reading the full frame to CPU.
++		// The native window's transparency still follows its window options.
++		gtkGLAreaSetHasAlpha(s.area, glAreaNeedsTexture(s.w.opts.Transparent, os.Getenv("MYGO_GL_API")))
+ 		// GTK keeps the area's last frame as it paints the window, and
+ 		// renders it again only as the content asks (queueDraw): rendering
+ 		// on every paint, its default, built a frame for each one a web view
+@@ -452,7 +456,9 @@
+ 		// within it is lost: ask at the next tick instead.
+ 		s.renderAgain = true
+ 	case s.drawsGL():
+-		s.queueDraw()
++		// Queue damage in the update phase so separate frame clocks consume
++		// coalesced requests before painting rather than starting damage-only cycles.
++		s.queueRenderLater()
+ 	default:
+ 		s.again = true
+ 		if s.tick == 0 {
+@@ -486,13 +492,29 @@
+ 	}
+ }
+ 
+-// queueRenderLater asks the area to render at the next tick of its frame
+-// clock, after the render signal now running has returned.
++// queueRenderLater coalesces requests into the next update phase. A live
++// update source preserves frame-clock pacing while video frames keep arriving.
+ func (s *surface) queueRenderLater() {
+-	if !s.renderPending && !s.w.closed {
++	if s.w.closed {
++		return
++	}
++	s.renderRequested = true
++	if !s.renderPending {
+ 		s.renderPending = true
+ 		gtkWidgetAddTickCallback(s.area, cbRenderTick, ptr(s.w.id), 0)
+ 	}
++}
++
++// renderQueuedFrame retains the update source only while requests arrive.
++// The first idle update removes it without repainting or spinning an idle window.
++func (s *surface) renderQueuedFrame() bool {
++	if s.w.closed || !s.renderRequested {
++		s.renderPending, s.renderRequested = false, false
++		return false
++	}
++	s.renderRequested = false
++	s.queueDraw()
++	return true
+ }
+ 
+ // queueDraw has the area paint again, a GtkGLArea rendering a frame in its
+@@ -1180,8 +1202,7 @@
+ 	})
+ 	cbRenderTick = purego.NewCallback(func(widget, clock, data ptr) bool {
+ 		if s := b().surfaceOf(data); s != nil {
+-			s.renderPending = false
+-			s.queueDraw()
++			return s.renderQueuedFrame()
+ 		}
+ 		return false
+ 	})
+--- /dev/null
++++ b/internal/linux/presentation_schedule_test.go
+@@ -0,0 +1,64 @@
++//go:build linux && (amd64 || arm64)
++
++package linux
++
++import "testing"
++
++func TestGLFrameTextureSelection(t *testing.T) {
++	for _, scenario := range []struct {
++		transparent bool
++		api         string
++		texture     bool
++	}{{false, "gles", true}, {false, "GLES", true}, {true, "", true}, {false, "", false}} {
++		if got := glAreaNeedsTexture(scenario.transparent, scenario.api); got != scenario.texture {
++			t.Fatalf("transparency=%v API=%q selected texture=%v", scenario.transparent, scenario.api, got)
++		}
++	}
++}
++
++func TestGLFrameRequestsCoalesceBeforePaint(t *testing.T) {
++	previousError, previousTick, previousQueue := gtkGLAreaGetError, gtkWidgetAddTickCallback, gtkGLAreaQueueRender
++	t.Cleanup(func() {
++		gtkGLAreaGetError, gtkWidgetAddTickCallback, gtkGLAreaQueueRender = previousError, previousTick, previousQueue
++	})
++	gtkGLAreaGetError = func(ptr) ptr { return 0 }
++	var ticks, draws int
++	gtkWidgetAddTickCallback = func(widget, callback, data, notify ptr) uint32 { ticks++; return uint32(ticks) }
++	gtkGLAreaQueueRender = func(ptr) { draws++ }
++	first := &surface{w: &window{id: 1}, gl: true, drawn: true}
++	second := &surface{w: &window{id: 2}, gl: true, drawn: true}
++	for range 4 {
++		first.RequestFrame()
++		second.RequestFrame()
++	}
++	if ticks != 2 || draws != 0 {
++		t.Fatalf("requests bypassed update: ticks=%d draws=%d", ticks, draws)
++	}
++	if !first.renderQueuedFrame() || !second.renderQueuedFrame() || draws != 2 {
++		t.Fatal("update did not consume each window's request")
++	}
++	first.RequestFrame()
++	if ticks != 2 || !first.renderQueuedFrame() || draws != 3 {
++		t.Fatal("streaming requests replaced the live update source")
++	}
++	if first.renderQueuedFrame() || second.renderQueuedFrame() || first.renderPending || second.renderPending || draws != 3 {
++		t.Fatal("idle update redrew or retained its source")
++	}
++	first.RequestFrame()
++	if ticks != 3 {
++		t.Fatal("request after idle could not schedule an update")
++	}
++	first.w.closed = true
++	if first.renderQueuedFrame() {
++		t.Fatal("closed window retained an update")
++	}
++	first.RequestFrame()
++	if draws != 3 || ticks != 3 {
++		t.Fatal("closed window scheduled native work")
++	}
++	second.rendering = true
++	second.RequestFrame()
++	if !second.renderAgain || second.renderPending || ticks != 3 {
++		t.Fatal("request during rendering was not deferred")
++	}
++}

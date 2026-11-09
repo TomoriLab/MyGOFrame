@@ -22,7 +22,7 @@ import (
 
 type engineState struct {
 	mutex  sync.Mutex
-	handle unsafe.Pointer
+	handle C.mgf_engine_handle
 }
 
 // Engine shares its native handle and control lock across value copies.
@@ -38,8 +38,11 @@ func (engine *Engine) currentState() *engineState {
 }
 
 func New() (*Engine, error) {
+	if version := C.mgf_api_version(); version != 2 {
+		return nil, fmt.Errorf("unsupported session ABI: %d", version)
+	}
 	handle := C.mgf_engine_create()
-	if handle == nil {
+	if handle == 0 {
 		return nil, errors.New("could not create capture engine")
 	}
 	return &Engine{state: &engineState{handle: handle}}, nil
@@ -52,9 +55,9 @@ func (engine *Engine) Close() {
 	}
 	state.mutex.Lock()
 	defer state.mutex.Unlock()
-	if state.handle != nil {
+	if state.handle != 0 {
 		C.mgf_engine_destroy(state.handle)
-		state.handle = nil
+		state.handle = 0
 	}
 }
 
@@ -111,7 +114,7 @@ func (engine *Engine) StartVideo(config VideoConfig) error {
 	}
 	state.mutex.Lock()
 	defer state.mutex.Unlock()
-	if state.handle == nil {
+	if state.handle == 0 {
 		return errors.New("capture engine is closed")
 	}
 	path := C.CString(config.Path)
@@ -139,7 +142,7 @@ func (engine *Engine) StopVideo() {
 	}
 	state.mutex.Lock()
 	defer state.mutex.Unlock()
-	if state.handle != nil {
+	if state.handle != 0 {
 		C.mgf_stop_video(state.handle)
 	}
 }
@@ -151,7 +154,7 @@ func (engine *Engine) StartAudio(source, output string) error {
 	}
 	state.mutex.Lock()
 	defer state.mutex.Unlock()
-	if state.handle == nil {
+	if state.handle == 0 {
 		return errors.New("capture engine is closed")
 	}
 	sourceValue, outputValue := C.CString(source), C.CString(output)
@@ -167,7 +170,7 @@ func (engine *Engine) StopAudio() {
 	}
 	state.mutex.Lock()
 	defer state.mutex.Unlock()
-	if state.handle != nil {
+	if state.handle != 0 {
 		C.mgf_stop_audio(state.handle)
 	}
 }
@@ -183,7 +186,7 @@ func (engine *Engine) SetVolume(volume float64) {
 		volume = 0
 	}
 	volume = max(0, min(1, volume))
-	if state.handle != nil {
+	if state.handle != 0 {
 		C.mgf_set_volume(state.handle, C.float(volume))
 	}
 }
@@ -195,12 +198,30 @@ func (engine *Engine) Status() (map[string]any, error) {
 	}
 	state.mutex.Lock()
 	defer state.mutex.Unlock()
-	if state.handle == nil {
+	if state.handle == 0 {
 		return nil, errors.New("capture engine is closed")
 	}
 	var result map[string]any
 	err := takeJSON(C.mgf_status_json(state.handle), &result, true)
 	return result, err
+}
+
+// Snapshot preserves integer counters without a JSON float64 round trip.
+func (engine *Engine) Snapshot() (SessionSnapshot, error) {
+	state := engine.currentState()
+	if state == nil {
+		return SessionSnapshot{}, errors.New("capture engine is closed")
+	}
+	state.mutex.Lock()
+	defer state.mutex.Unlock()
+	if state.handle == 0 {
+		return SessionSnapshot{}, errors.New("capture engine is closed")
+	}
+	var result SessionSnapshot
+	if err := takeJSON(C.mgf_status_json(state.handle), &result, true); err != nil {
+		return result, err
+	}
+	return result, result.validate()
 }
 
 func (engine *Engine) AcquireFrame(afterSequence uint64) (*Frame, error) {
@@ -210,7 +231,7 @@ func (engine *Engine) AcquireFrame(afterSequence uint64) (*Frame, error) {
 	}
 	state.mutex.Lock()
 	defer state.mutex.Unlock()
-	if state.handle == nil {
+	if state.handle == 0 {
 		return nil, nil
 	}
 	var dmaView C.mgfr_dma_frame_view
@@ -223,11 +244,10 @@ func (engine *Engine) AcquireFrame(afterSequence uint64) (*Frame, error) {
 		width, height, stride := uint64(dmaView.width), uint64(dmaView.height), uint64(dmaView.stride)
 		uvOffset, byteLength := uint64(dmaView.uv_offset), uint64(dmaView.byte_length)
 		if dmaView.abi_version != 1 || uint64(dmaView.struct_size) < uint64(C.sizeof_mgfr_dma_frame_view) ||
-			token == nil || dmaView.fd < 0 || width == 0 || height == 0 || width > 16384 || height > 16384 ||
-			width%2 != 0 || height%2 != 0 || stride < width || uvOffset < stride*height ||
-			uvOffset > byteLength || stride*(height/2) > byteLength-uvOffset || byteLength > 128*1024*1024 ||
-			uint32(dmaView.fourcc) != 0x3231564e || dmaView.modifier != 0 ||
-			(dmaView.color_range != 1 && dmaView.color_range != 2) || (dmaView.encoding != 1 && dmaView.encoding != 2) {
+			token == nil || dmaView.fd < 0 || dmaView.modifier != 0 ||
+			!validDMALayout(uint32(dmaView.fourcc), width, height, stride, uvOffset, byteLength, uint32(dmaView.encoding)) ||
+			(dmaView.color_range != 1 && dmaView.color_range != 2) ||
+			(dmaView.transfer_function != 1 && dmaView.transfer_function != 2) {
 			if token != nil {
 				C.mgf_release_dma_frame(token)
 			}

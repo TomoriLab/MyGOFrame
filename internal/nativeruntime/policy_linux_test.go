@@ -74,6 +74,59 @@ func (value fixture) write(test *testing.T) {
 	}
 }
 
+func TestGLESOpaqueTextureCapabilityFollowsVerifiedRuntime(test *testing.T) {
+	value := runtimeFixture(test)
+	first, err := plan(value.config)
+	if err != nil || first == nil || environmentValues(first.Environment)[textureVariable] != "" {
+		test.Fatalf("an older runtime enabled opaque GLES textures: %v, %v", first, err)
+	}
+	value.metadata.Features = map[string]bool{"glesOpaqueTexture": true}
+	value.write(test)
+	value.config.Environment = first.Environment
+	selected, err := plan(value.config)
+	if err != nil || selected == nil || environmentValues(selected.Environment)[textureVariable] != "1" {
+		test.Fatalf("verified GLES texture activation failed: %v, %v", selected, err)
+	}
+	value.config.Environment = selected.Environment
+	if repeated, err := plan(value.config); err != nil || repeated != nil {
+		test.Fatalf("GLES textures caused repeated execution: %v, %v", repeated, err)
+	}
+	value.config.Environment = replaceVariable(selected.Environment, textureVariable, "0", false)
+	overridden, err := plan(value.config)
+	if err != nil || overridden == nil || environmentValues(overridden.Environment)[textureVariable] != "0" || environmentValues(overridden.Environment)[textureActiveVariable] != "" {
+		test.Fatalf("an inherited capability overrode the caller's selection: %v, %v", overridden, err)
+	}
+	value.config.Environment = selected.Environment
+	value.metadata.Features = nil
+	value.write(test)
+	retired, err := plan(value.config)
+	if err != nil || retired == nil || environmentValues(retired.Environment)[textureVariable] != "" {
+		test.Fatalf("runtime downgrade retained its texture capability: %v, %v", retired, err)
+	}
+	value.config.Environment = append(selected.Environment, modeVariable+"=system")
+	system, err := plan(value.config)
+	if err != nil || system == nil || environmentValues(system.Environment)[textureVariable] != "" || environmentValues(system.Environment)[textureActiveVariable] != "" {
+		test.Fatalf("system selection retained managed GLES textures: %v, %v", system, err)
+	}
+}
+
+func TestExplicitGLESOpaqueTextureSelectionIsPreserved(test *testing.T) {
+	for _, setting := range []string{"", "0", "1"} {
+		value := runtimeFixture(test)
+		value.metadata.Features = map[string]bool{"glesOpaqueTexture": true}
+		value.write(test)
+		value.config.Environment = append(value.config.Environment, textureVariable+"="+setting)
+		selected, err := plan(value.config)
+		if err != nil || selected == nil {
+			test.Fatalf("explicit texture selection failed: %v, %v", selected, err)
+		}
+		values := environmentValues(selected.Environment)
+		if values[textureVariable] != setting || values[textureActiveVariable] != "" {
+			test.Fatalf("explicit texture selection was replaced: %v", values)
+		}
+	}
+}
+
 func (value *fixture) withModules(test *testing.T) {
 	test.Helper()
 	value.metadata.GTKModules = make(map[string]library)

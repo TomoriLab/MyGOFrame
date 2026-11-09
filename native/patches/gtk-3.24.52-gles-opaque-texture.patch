@@ -1,0 +1,26 @@
+--- a/gtk/gtkglarea.c
++++ b/gtk/gtkglarea.c
+@@ -393,9 +393,10 @@
+ 
+   glGenFramebuffers (1, &priv->frame_buffer);
+ 
+-  if (priv->has_alpha)
+-    {
+-      /* For alpha we use textures as that is required for blending to work */
++  /* GLES textures keep opaque composition on the same drawing path as alpha surfaces. */
++  if (priv->has_alpha || gdk_gl_context_get_use_es (priv->context))
++    {
++      /* Texture ownership remains with the existing GtkGLArea buffer lifecycle. */
+       if (priv->texture == 0)
+         glGenTextures (1, &priv->texture);
+ 
+@@ -461,7 +462,8 @@
+       glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+ 
+       if (gdk_gl_context_get_use_es (priv->context))
+-        glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++        glTexImage2D (GL_TEXTURE_2D, 0, priv->has_alpha ? GL_RGBA8 : GL_RGB8,
++                      width, height, 0, priv->has_alpha ? GL_RGBA : GL_RGB, GL_UNSIGNED_BYTE, NULL);
+       else
+         glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_BGRA, GL_UNSIGNED_BYTE, NULL);
+     }

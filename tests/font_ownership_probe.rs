@@ -27,6 +27,10 @@ unsafe extern "C" {
     fn FcFini();
     fn FcInitLoadConfigAndFonts() -> *mut c_void;
     fn FcConfigDestroy(config: *mut c_void);
+    fn FcConfigGetCurrent() -> *mut c_void;
+    fn FcConfigReference(config: *mut c_void) -> *mut c_void;
+    fn FcConfigSetCurrent(config: *mut c_void) -> c_int;
+    fn FcFontMatch(config: *mut c_void, pattern: *mut c_void, result: *mut c_int) -> *mut c_void;
     fn FcGetVersion() -> c_int;
 }
 
@@ -132,6 +136,36 @@ fn pango(cycles: usize, preinitialize: bool) {
     println!("baselineThreads={baseline_threads} finalThreads={final_threads}");
 }
 
+fn detached_config() {
+    unsafe {
+        for cycle in 0..5 {
+            assert_eq!(FcInit(), 1);
+            // The caller's explicit reference must survive removal of the global reference.
+            let config = FcConfigReference(FcConfigGetCurrent());
+            assert!(!config.is_null());
+            assert_eq!(FcConfigSetCurrent(ptr::null_mut()), 1);
+            let pattern = FcPatternCreate();
+            assert!(!pattern.is_null());
+            let mut result = -1;
+            let font = FcFontMatch(config, pattern, &mut result);
+            assert_eq!(result, 0);
+            assert!(!font.is_null());
+            let mut family = ptr::null_mut();
+            assert_eq!(FcPatternGetString(font, c"family".as_ptr(), 0, &mut family), 0);
+            assert!(!CStr::from_ptr(family.cast()).is_empty());
+            FcPatternDestroy(pattern);
+            FcConfigDestroy(config);
+            // A matched font owns its data independently of the configuration lifetime.
+            assert_eq!(FcPatternGetString(font, c"family".as_ptr(), 0, &mut family), 0);
+            assert!(!CStr::from_ptr(family.cast()).is_empty());
+            FcPatternDestroy(font);
+            // Font matching can initialize a fresh default configuration internally.
+            assert_eq!(FcConfigSetCurrent(ptr::null_mut()), 1);
+            println!("detachedConfigCycle={cycle} retainedConfig=PASS retainedFont=PASS");
+        }
+    }
+}
+
 fn main() {
     assert_eq!(
         std::env::args().count(),
@@ -188,6 +222,11 @@ fn main() {
         "pango-release" => pango(1, false),
         "pango-release-5" => pango(5, false),
         "pango-preinit" => pango(1, true),
+        "pango-detach-config" => {
+            pango(5, false);
+            unsafe { assert_eq!(FcConfigSetCurrent(ptr::null_mut()), 1) };
+        }
+        "config-detach-live-reference" => detached_config(),
         _ => panic!("unsupported mode"),
     }
 }

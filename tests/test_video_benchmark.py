@@ -27,6 +27,14 @@ def status(roles):
 
 
 class VideoBenchmarkTests(unittest.TestCase):
+    def test_mode_validation_requires_the_requested_raw_format(self):
+        for pixel_format in ("NV12", "P010", "YUYV", "UYVY", "BGR3", "RGB3"):
+            value = {"video": {"format": pixel_format, "width": 640, "height": 480,
+                               "intervalNumerator": 1, "intervalDenominator": 60}}
+            BENCHMARK.validate_mode(value, 640, 480, "60", pixel_format)
+            with self.assertRaises(BENCHMARK.BenchmarkError):
+                BENCHMARK.validate_mode(value, 640, 480, "60", "MJPG")
+
     def test_window_roles_do_not_follow_context_creation_order(self):
         metrics = BENCHMARK.validate_status(status({"1": "capture", "2": "main"}), "dma", 10, True)
         self.assertEqual([(item["sourceContextID"], item["windowRole"]) for item in metrics["contexts"]],

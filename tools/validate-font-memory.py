@@ -4,7 +4,8 @@
 A passing diagnostic reproduces expected retained-state and lost-owner reports
 and verifies clean explicit owner release. It does not mean the GUI is leak-free.
 The sole-owner FcFini case runs in a separate Fontconfig-only child process and
-does not propose application-wide Fontconfig cleanup.
+does not call FcFini in application shutdown. Separate controls validate release
+of the current-configuration reference while other owners remain live.
 """
 
 import argparse
@@ -30,6 +31,8 @@ EXPECTED_EXITS = {
     "pango-release": 23,
     "pango-release-5": 23,
     "pango-preinit": 23,
+    "pango-detach-config": 0,
+    "config-detach-live-reference": 0,
 }
 SUMMARY = re.compile(r"SUMMARY: AddressSanitizer: (\d+) byte\(s\) leaked in (\d+) allocation\(s\)\.")
 INVALID_ACCESS = re.compile(
@@ -101,6 +104,7 @@ def classify(mode, run, output):
     observations = [line for line in output.splitlines() if line.startswith((
         "fontconfigVersion=", "pattern=", "ownedConfig=", "cycle=", "baselineThreads=",
         "retainedPatternLeakCheck=", "retainedPatternQuery=", "releasedPatternLeakCheck=",
+        "detachedConfigCycle=",
     ))]
     if mode == "pattern-checked":
         markers = [line for line in observations if line.startswith((
@@ -112,9 +116,14 @@ def classify(mode, run, output):
         threads = re.search(r"baselineThreads=(\d+) finalThreads=(\d+)", output)
         if not threads or threads.group(1) != threads.group(2):
             errors.append("The Pango worker thread count did not return to its baseline.")
-        expected_cycles = 5 if mode == "pango-release-5" else 1
+        expected_cycles = 5 if mode in ("pango-release-5", "pango-detach-config") else 1
         if len(re.findall(r"^cycle=\d+ families=\d+ released=PASS$", output, re.MULTILINE)) != expected_cycles:
             errors.append("The expected Pango map/context release cycles did not complete.")
+    if mode == "config-detach-live-reference":
+        expected_markers = [f"detachedConfigCycle={index} retainedConfig=PASS retainedFont=PASS"
+                            for index in range(5)]
+        if [line for line in observations if line.startswith("detachedConfigCycle=")] != expected_markers:
+            errors.append("The retained configuration/font and reinitialization controls did not complete.")
     run.update({"mode": mode, "expectedExitCode": expected, "leakReports": summaries,
                 "observations": observations, "errors": errors, "passed": not errors})
     return run

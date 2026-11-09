@@ -1,3 +1,4 @@
+use crate::callback_gate::CallbackGuard;
 use crate::{ffi, make_c_string};
 use std::cell::UnsafeCell;
 use std::ffi::{CStr, CString, c_char, c_void};
@@ -126,15 +127,11 @@ impl AudioRing {
     }
 
     fn capture(&self, input: Option<&[f32]>, frames: usize) {
-        if self
-            .capture_active
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
+        let Some(_guard) = CallbackGuard::enter(&self.capture_active) else {
             self.dropped_frames
                 .fetch_add(frames as u64, Ordering::Relaxed);
             return;
-        }
+        };
         let frames = frames.min(u32::MAX as usize);
         self.capture_quantum.store(frames as u32, Ordering::Relaxed);
         let write = self.write_position.load(Ordering::Relaxed);
@@ -167,18 +164,13 @@ impl AudioRing {
                 .fetch_add((frames - accepted) as u64, Ordering::Relaxed);
             self.overflowed.store(true, Ordering::Release);
         }
-        self.capture_active.store(false, Ordering::Release);
     }
 
     fn playback(&self, output: &mut [f32]) {
-        if self
-            .playback_active
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
+        let Some(_guard) = CallbackGuard::enter(&self.playback_active) else {
             output.fill(0.0);
             return;
-        }
+        };
         let frames = output.len() / CHANNELS;
         let mut read = self.read_position.load(Ordering::Relaxed);
         let write = self.write_position.load(Ordering::Acquire);
@@ -210,7 +202,6 @@ impl AudioRing {
             .fetch_add((frames - provided) as u64, Ordering::Relaxed);
         self.played_frames
             .fetch_add(provided as u64, Ordering::Relaxed);
-        self.playback_active.store(false, Ordering::Release);
     }
 }
 

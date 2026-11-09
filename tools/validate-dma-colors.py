@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare leased NV12 DMA-BUF GPU output with the production CPU converter."""
+"""Compare leased raw DMA-BUF GPU output with the production CPU converter."""
 
 import argparse
 from contextlib import contextmanager
@@ -328,38 +328,52 @@ def source_digest(view):
         synchronize(view.descriptor, True, writing=False)
 
 
-def encode_rgb(red, green, blue, full_range, encoding):
+def encode_rgb(red, green, blue, full_range, encoding, depth=8):
     red_weight, blue_weight = (0.299, 0.114) if encoding == 1 else (0.2126, 0.0722)
     luminance = red_weight * red + (1 - red_weight - blue_weight) * green + blue_weight * blue
-    luminance_scale, chroma_scale, offset = (255, 127.5, 0) if full_range else (219, 112, 16)
-    clamp = lambda value: min(255, max(0, round(value)))
+    maximum = (1 << depth) - 1
+    factor = 1 << (depth - 8)
+    neutral = 128 * factor
+    luminance_scale, chroma_scale, offset = ((maximum, maximum / 2, 0) if full_range
+                                              else (219 * factor, 112 * factor, 16 * factor))
+    clamp = lambda value: min(maximum, max(0, round(value)))
     return (
         clamp(offset + luminance_scale * luminance / 255),
-        clamp(128 + chroma_scale * (blue - luminance) / (255 * (1 - blue_weight))),
-        clamp(128 + chroma_scale * (red - luminance) / (255 * (1 - red_weight))),
+        clamp(neutral + chroma_scale * (blue - luminance) / (255 * (1 - blue_weight))),
+        clamp(neutral + chroma_scale * (red - luminance) / (255 * (1 - red_weight))),
     )
 
 
-def pattern_patches(view, frame_index=0):
+def pattern_patches(view, frame_index=0, alternating_luma=False):
     full_range = view.color_range == 2
-    minimum, maximum = (0, 255) if full_range else (16, 235)
-    chroma_minimum, chroma_maximum = (0, 255) if full_range else (16, 240)
+    format_name = view.fourcc.to_bytes(4, "little").decode("ascii")
+    depth = 10 if format_name == "P010" else 8
+    factor = 1 << (depth - 8)
+    neutral = 128 * factor
+    minimum, maximum = (0, (1 << depth) - 1) if full_range else (16 * factor, 235 * factor)
+    chroma_minimum, chroma_maximum = (0, (1 << depth) - 1) if full_range else (16 * factor, 240 * factor)
+    rgb = format_name in ("BGR3", "RGB3")
     colors = [
         ("white", (255, 255, 255)), ("yellow", (255, 255, 0)),
         ("cyan", (0, 255, 255)), ("green", (0, 255, 0)),
         ("magenta", (255, 0, 255)), ("red", (255, 0, 0)),
         ("blue", (0, 0, 255)), ("black", (0, 0, 0)),
     ]
-    rows = [[(name, encode_rgb(*color, full_range, view.encoding), color) for name, color in colors]]
-    gray_codes = [minimum, minimum + 1, minimum + 16, 64, 128, 192, maximum - 1, maximum]
+    def encode(color):
+        if rgb:
+            return tuple(round(minimum + (maximum - minimum) * channel / 255) for channel in color)
+        return encode_rgb(*color, full_range, view.encoding, depth)
+    rows = [[(name, encode(color), color) for name, color in colors]]
+    gray_codes = [minimum, minimum + 1, minimum + 2, 64 * factor + 3,
+                  128 * factor + 1, 192 * factor + 2, maximum - 1, maximum]
     if frame_index:
         gray_codes[1:-1] = [minimum + 1 + (code - minimum - 1 + 17 * frame_index)
                            % (maximum - minimum - 1) for code in gray_codes[1:-1]]
-    rows.append([(f"gray-{index}", (code, 128, 128), None) for index, code in enumerate(gray_codes)])
+    rows.append([(f"gray-{index}", ((code, code, code) if rgb else (code, neutral, neutral)), None) for index, code in enumerate(gray_codes)])
     middle = round((minimum + maximum) / 2)
     chroma_pairs = [
-        (chroma_minimum, 128), (chroma_maximum, 128), (128, chroma_minimum),
-        (128, chroma_maximum), (64, 192), (192, 64),
+        (chroma_minimum, neutral), (chroma_maximum, neutral), (neutral, chroma_minimum),
+        (neutral, chroma_maximum), (64 * factor + 1, 192 * factor + 2), (192 * factor + 3, 64 * factor),
         (chroma_minimum, chroma_minimum), (chroma_maximum, chroma_maximum),
     ]
     if frame_index:
@@ -377,15 +391,18 @@ def pattern_patches(view, frame_index=0):
             left = (view.width * column_index // 8) & ~1
             right = (view.width * (column_index + 1) // 8) & ~1
             patches.append({"name": name, "bounds": [left, top, right, bottom],
-                            "nv12": list(values), "inputRGB": original_rgb})
+                            "source": list(values), "inputRGB": original_rgb,
+                            "alternateLuma": alternating_luma and name.startswith("gray-")
+                            and name not in ("gray-0", "gray-7") and not rgb})
     return patches
 
 
 def write_pattern(view, patches, flush_mapping=False, cache_flusher=None):
     if view.abi_version != 1 or view.struct_size != ctypes.sizeof(DmaFrameView):
         raise RuntimeError("The native DMA frame ABI does not match this tool.")
-    if view.modifier != 0 or view.encoding not in (1, 2):
-        raise RuntimeError("Reference patterns require linear Rec.601 or Rec.709 NV12.")
+    format_name = view.fourcc.to_bytes(4, "little").decode("ascii")
+    if view.modifier != 0 or format_name not in ("NV12", "P010", "YUYV", "UYVY", "BGR3", "RGB3"):
+        raise RuntimeError("Reference patterns require a supported linear raw format.")
     synchronize(view.descriptor, False)
     flush_duration = None
     try:
@@ -393,15 +410,45 @@ def write_pattern(view, patches, flush_mapping=False, cache_flusher=None):
                        flags=mmap.MAP_SHARED, prot=mmap.PROT_READ | mmap.PROT_WRITE) as mapping:
             for patch in patches:
                 left, top, right, bottom = patch["bounds"]
-                luminance, blue, red = patch["nv12"]
-                luminance_row = bytes([luminance]) * (right - left)
-                chroma_row = bytes([blue, red]) * ((right - left) // 2)
-                for row in range(top, bottom):
-                    offset = row * view.stride + left
-                    mapping[offset:offset + len(luminance_row)] = luminance_row
-                for row in range(top // 2, bottom // 2):
-                    offset = view.uv_offset + row * view.stride + left
-                    mapping[offset:offset + len(chroma_row)] = chroma_row
+                first, second, third = patch["source"]
+                # Alternating luma values expose packed-pixel parity and P010 low-bit errors.
+                alternate = first
+                if patch.get("alternateLuma", False):
+                    alternate = max(0, first - 17)
+                count = right - left
+                if format_name in ("NV12", "P010"):
+                    if format_name == "NV12":
+                        luminance_row = bytes([first, alternate]) * (count // 2)
+                        chroma_row = bytes([second, third]) * (count // 2)
+                        bytes_per_sample = 1
+                    else:
+                        luminance_row = struct.pack("<HH", first << 6, alternate << 6) * (count // 2)
+                        chroma_row = struct.pack("<HH", second << 6, third << 6) * (count // 2)
+                        bytes_per_sample = 2
+                    for row in range(top, bottom):
+                        offset = row * view.stride + left * bytes_per_sample
+                        mapping[offset:offset + len(luminance_row)] = luminance_row
+                    for row in range(top // 2, bottom // 2):
+                        offset = view.uv_offset + row * view.stride + left * bytes_per_sample
+                        mapping[offset:offset + len(chroma_row)] = chroma_row
+                else:
+                    if format_name == "YUYV":
+                        pixels = bytes([first, second, alternate, third])
+                        row_bytes = pixels * (count // 2)
+                        bytes_per_pixel = 2
+                    elif format_name == "UYVY":
+                        pixels = bytes([second, first, third, alternate])
+                        row_bytes = pixels * (count // 2)
+                        bytes_per_pixel = 2
+                    else:
+                        pixels = (first, second, third)
+                        if format_name == "BGR3":
+                            pixels = pixels[::-1]
+                        row_bytes = bytes(pixels) * count
+                        bytes_per_pixel = 3
+                    for row in range(top, bottom):
+                        offset = row * view.stride + left * bytes_per_pixel
+                        mapping[offset:offset + len(row_bytes)] = row_bytes
             if flush_mapping:
                 mapping.flush()
             if cache_flusher is not None:
@@ -409,6 +456,32 @@ def write_pattern(view, patches, flush_mapping=False, cache_flusher=None):
     finally:
         synchronize(view.descriptor, True)
     return flush_duration
+
+
+def expected_rgb(view, patch, column):
+    format_name = view.fourcc.to_bytes(4, "little").decode("ascii")
+    samples = list(patch["source"])
+    if patch.get("alternateLuma", False) and (column - patch["bounds"][0]) % 2:
+        samples[0] = max(0, samples[0] - 17)
+    full_range = view.color_range == 2
+    if format_name in ("BGR3", "RGB3"):
+        channels = samples if full_range else [(value - 16) * 255 / 219 for value in samples]
+    else:
+        factor = 4 if format_name == "P010" else 1
+        maximum = 1023 if factor == 4 else 255
+        black = 0 if full_range else 16 * factor
+        luma_span = maximum if full_range else 219 * factor
+        chroma_span = maximum if full_range else 224 * factor
+        luminance = (samples[0] - black) / luma_span
+        blue = (samples[1] - 128 * factor) / chroma_span
+        red = (samples[2] - 128 * factor) / chroma_span
+        red_weight, blue_weight = (0.299, 0.114) if view.encoding == 1 else (0.2126, 0.0722)
+        green_weight = 1 - red_weight - blue_weight
+        channels = [255 * (luminance + 2 * (1 - red_weight) * red),
+                    255 * (luminance - 2 * blue_weight * (1 - blue_weight) / green_weight * blue
+                           - 2 * red_weight * (1 - red_weight) / green_weight * red),
+                    255 * (luminance + 2 * (1 - blue_weight) * blue)]
+    return [max(0, min(255, round(value))) for value in channels]
 
 
 def compare_images(view, patches, reference, gpu, maximum_error):
@@ -424,16 +497,18 @@ def compare_images(view, patches, reference, gpu, maximum_error):
             for column_index in range(8):
                 column = left + 4 + (right - left - 9) * column_index // 7
                 offset = (row * view.width + column) * 4
-                sample_errors = [abs(reference[offset + channel] - gpu[offset + channel])
-                                 for channel in range(3)]
+                reference_rgb = (list(reference[offset:offset + 3]) if reference is not None
+                                 else expected_rgb(view, patch, column))
+                sample_errors = [abs(reference_rgb[channel] - gpu[offset + channel]) for channel in range(3)]
                 channel_errors.extend(sample_errors)
                 worst_samples.append({"x": column, "y": row, "maximumError": max(sample_errors),
-                                      "referenceRGB": list(reference[offset:offset + 3]),
+                                      "referenceRGB": reference_rgb,
                                       "gpuRGB": list(gpu[offset:offset + 3])})
                 alpha_errors.append(abs(255 - gpu[offset + 3]))
         center = (((top + bottom) // 2) * view.width + (left + right) // 2) * 4
         summary = dict(patch)
-        summary.update(referenceRGB=list(reference[center:center + 3]),
+        summary.update(referenceRGB=(list(reference[center:center + 3]) if reference is not None
+                                     else expected_rgb(view, patch, (left + right) // 2)),
                        gpuRGB=list(gpu[center:center + 3]),
                        maximumError=max(channel_errors), meanError=statistics.mean(channel_errors),
                        worstSamples=sorted(worst_samples, key=lambda sample: sample["maximumError"], reverse=True)[:3])
@@ -445,7 +520,8 @@ def compare_images(view, patches, reference, gpu, maximum_error):
                        for item in endpoints for value in item["gpuRGB"]]
     maximum = max(errors)
     return {
-        "comparison": "RGB channels sampled at 8x8 interior points in each of 24 flat NV12 patches",
+        "comparison": "RGB channels sampled at 8x8 interior points in each of 24 raw-format patches",
+        "reference": "production FFmpeg converter" if reference is not None else "analytic source-sample conversion",
         "sampledChannelCount": len(errors), "fullFrameCompared": False,
         "maximumError": maximum, "meanError": statistics.mean(errors),
         "p95Error": errors[math.ceil((len(errors) - 1) * 0.95)],
@@ -545,7 +621,7 @@ def validate_frame(core, graphics, arguments, renderer, view, color_range, frame
     name = "limited" if color_range == 1 else "full"
     failure = ctypes.c_void_p()
     try:
-        patches = pattern_patches(view, frame_index)
+        patches = pattern_patches(view, frame_index, arguments.alternating_luma)
         flush_duration = write_pattern(view, patches, arguments.flush_mapping, cache_flusher)
         digest_before = source_digest(view)
         length = view.width * view.height * 4
@@ -563,9 +639,17 @@ def validate_frame(core, graphics, arguments, renderer, view, color_range, frame
         if not core.reference(view.token, reference_after, length, ctypes.byref(failure)):
             raise RuntimeError(core.take_error(failure))
         reference_change = compare_images(view, patches, reference, reference_after, 0)
-        result = compare_images(view, patches, reference, gpu, arguments.maximum_error)
+        cpu_comparison = compare_images(view, patches, reference, gpu, arguments.maximum_error)
+        analytic_comparison = compare_images(view, patches, None, gpu, arguments.maximum_error)
+        # Alternating pixels test byte addressing against the exact source samples. The CPU
+        # converter may resample them, so its complete comparison remains a separate result.
+        result = dict(analytic_comparison if arguments.alternating_luma else cpu_comparison)
+        result["analyticComparison"] = analytic_comparison
+        if arguments.alternating_luma:
+            result["cpuComparison"] = cpu_comparison
+        result["passed"] = result["passed"] and analytic_comparison["passed"]
         guard_unchanged = all(value == 0xA5 for value in gpu[length:])
-        result.update(range=name, frameIndex=frame_index, width=view.width, height=view.height, stride=view.stride,
+        result.update(format=view.fourcc.to_bytes(4, "little").decode("ascii"), range=name, frameIndex=frame_index, width=view.width, height=view.height, stride=view.stride,
                       encoding=view.encoding, generation=view.generation,
                       capturedSequence=view.sequence, sourceBytes=view.byte_length,
                       captureSlot=view.index,
@@ -596,13 +680,15 @@ def validate_range(core, graphics, arguments, color_range, cache_flusher=None):
     session = None
     renderer = None
     try:
-        config = VideoConfig(arguments.device.encode(), int.from_bytes(b"NV12", "little"),
+        config = VideoConfig(arguments.device.encode(), int.from_bytes(arguments.format.encode("ascii"), "little"),
                              arguments.width, arguments.height, 1, arguments.fps, color_range)
         information = VideoInformation()
         failure = ctypes.c_void_p()
         session = core.create_video(ctypes.byref(config), ctypes.byref(information), ctypes.byref(failure))
         if not session:
             raise RuntimeError(core.take_error(failure))
+        if information.fourcc != config.fourcc or (information.width, information.height) != (config.width, config.height):
+            raise RuntimeError("The device did not negotiate the requested format and dimensions.")
         renderer = core.create_gpu(ctypes.byref(failure))
         if not renderer:
             raise RuntimeError(core.take_error(failure))
@@ -624,7 +710,7 @@ def validate_range(core, graphics, arguments, color_range, cache_flusher=None):
         errors = [frame["meanError"] for frame in frames]
         return {
             "range": "limited" if color_range == 1 else "full",
-            "width": information.width, "height": information.height,
+            "format": arguments.format, "width": information.width, "height": information.height,
             "frameCount": len(frames), "singleSession": True, "singleRenderer": True,
             "patternsVaryPerFrame": True, "captureSlots": sorted(set(slots)),
             "reusedSlotCount": len(slots) - len(set(slots)),
@@ -647,6 +733,7 @@ def main():
     root = Path(__file__).resolve().parent.parent
     parser.add_argument("--device", default="/dev/video0", help="Select the exclusive V4L2 capture node.")
     parser.add_argument("--library", type=Path, default=root / "build/libmygoframe_media.so")
+    parser.add_argument("--format", choices=("NV12", "P010", "YUYV", "UYVY", "BGR3", "RGB3"), default="NV12")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=60)
@@ -656,6 +743,8 @@ def main():
                         help="Validate this many new frame leases in one session and renderer per range.")
     parser.add_argument("--maximum-error", type=int, default=3,
                         help="Allow at most this many 8-bit RGB code values against the CPU converter.")
+    parser.add_argument("--alternating-luma", action="store_true",
+                        help="Compare alternating pixel luma against exact source values; retain FFmpeg differences separately.")
     parser.add_argument("--poison-pack-state", action="store_true",
                         help="Verify exact readback capacity and restoration of nondefault GL packing state.")
     parser.add_argument("--stop-before-pattern", action="store_true",
@@ -683,8 +772,9 @@ def main():
         parser.error("Stopped-producer validation supports exactly one frame per range.")
     if ctypes.sizeof(DeviceFormat) != 208 or ctypes.sizeof(DmaFrameView) != 104:
         parser.error("This diagnostic currently requires the Linux 64-bit native ABI.")
-    result = {"device": arguments.device, "tests": [],
-              "method": "Overwrite held capture leases with known NV12 patterns before GPU submission.",
+    result = {"device": arguments.device, "tests": [], "alternatingLuma": arguments.alternating_luma,
+              "acceptanceReference": "analytic source samples" if arguments.alternating_luma else "FFmpeg and analytic source samples",
+              "method": "Overwrite held capture leases with known raw-format patterns before GPU submission.",
               "thresholdRationale": "Three 8-bit code values allow conversion coefficient and rounding differences; patch boundaries are excluded.",
               "endToEndDisplayColorMeasured": False}
     descriptor = None

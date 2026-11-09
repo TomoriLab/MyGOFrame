@@ -1,6 +1,6 @@
 # Video path benchmark
 
-`tools/benchmark-video.py` compares the CPU and DMA-BUF paths with the same NV12 mode and native window sizes. It runs three CPU/DMA pairs by default, with 30 seconds per run, and rejects a DMA run that silently falls back to CPU processing.
+`tools/benchmark-video.py` compares the CPU and DMA-BUF paths with the same raw video mode and native window sizes. `--format` accepts NV12 (the default), P010, YUYV, UYVY, BGR3, and RGB3. Select dimensions and a frame rate that the device reports for that format. The tool verifies the negotiated format, dimensions, and frame interval. It runs three CPU/DMA pairs by default, with 30 seconds per run, and rejects a DMA run that silently falls back to CPU processing.
 
 ```sh
 make

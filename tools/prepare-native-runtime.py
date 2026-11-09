@@ -303,7 +303,7 @@ def build_runtime(lock, inputs, output, jobs):
     manifest = {
         "schemaVersion": 1, "architecture": architecture, "multiarch": multiarch,
         "fingerprint": fingerprint, "systemCompatibility": compatibility,
-        "libraries": {}, "sources": [],
+        "libraries": {}, "sources": [], "features": lock.get("features", {}),
     }
     if lock.get("gtkModules"):
         manifest["gtkModules"] = {}

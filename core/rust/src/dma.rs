@@ -1,6 +1,9 @@
+use crate::dma_format::{DmaFormat, MAX_BUFFER_BYTES};
+use crate::frame_pool::frame_layout;
+use crate::notification::{self, NotificationSlot};
 use crate::video::{
-    MappedBuffer, VideoFile, capture_buffer, checked_ioctl, frame_layout, last_os_error,
-    read_write_ioctl, try_ioctl, write_ioctl,
+    MappedBuffer, VideoFile, capture_buffer, checked_ioctl, last_os_error, read_write_ioctl,
+    try_ioctl, write_ioctl,
 };
 use crate::{ffi, make_c_string};
 use std::ffi::{CStr, c_char, c_void};
@@ -13,11 +16,11 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const ABI_VERSION: u32 = 1;
+#[cfg(test)]
 const NV12: u32 = u32::from_le_bytes(*b"NV12");
 const CAPTURE_TYPE: u32 = ffi::v4l2_buf_type_V4L2_BUF_TYPE_VIDEO_CAPTURE;
 const MMAP_MEMORY: u32 = ffi::v4l2_memory_V4L2_MEMORY_MMAP;
 const BUFFER_COUNT: u32 = 6;
-const MAX_BUFFER_BYTES: usize = 128 * 1024 * 1024;
 const MAX_POOL_BYTES: usize = 512 * 1024 * 1024;
 const MAX_PENDING_READS: usize = 64;
 const O_CLOEXEC: u32 = 0o2000000;
@@ -390,6 +393,7 @@ struct DmaPool {
 }
 
 struct DmaStatus {
+    notification: NotificationSlot,
     stop: AtomicBool,
     running: AtomicBool,
     frames: AtomicU64,
@@ -441,13 +445,17 @@ impl Drop for DmaCapture {
 
 fn resolve_color(pixels: &ffi::v4l2_pix_format, selection: i32) -> Result<(i32, u32, u32), String> {
     let colorspace = pixels.colorspace;
+    let is_rgb = DmaFormat::from_fourcc(pixels.pixelformat).is_ok_and(DmaFormat::is_rgb);
     if colorspace == ffi::v4l2_colorspace_V4L2_COLORSPACE_BT2020
         || colorspace == ffi::v4l2_colorspace_V4L2_COLORSPACE_DCI_P3
     {
         return Err("DMA-BUF capture requires an SDR Rec.601 or Rec.709 signal.".into());
     }
     let reported = unsafe { pixels.__bindgen_anon_1.ycbcr_enc };
-    let encoding = if reported == 0 {
+    let encoding = if is_rgb {
+        // RGB bytes do not carry a YCbCr matrix, even when the driver reports one.
+        0
+    } else if reported == 0 {
         // These defaults match V4L2_MAP_YCBCR_ENC_DEFAULT in linux/videodev2.h.
         match colorspace {
             ffi::v4l2_colorspace_V4L2_COLORSPACE_REC709
@@ -465,7 +473,7 @@ fn resolve_color(pixels: &ffi::v4l2_pix_format, selection: i32) -> Result<(i32, 
     } else {
         reported
     };
-    if !matches!(encoding, 1 | 2) {
+    if !is_rgb && !matches!(encoding, 1 | 2) {
         return Err("DMA-BUF capture supports only Rec.601 and Rec.709 YCbCr matrices.".into());
     }
     let transfer_function = if pixels.xfer_func == ffi::v4l2_xfer_func_V4L2_XFER_FUNC_DEFAULT {
@@ -495,7 +503,7 @@ fn resolve_color(pixels: &ffi::v4l2_pix_format, selection: i32) -> Result<(i32, 
         _ => {
             pixels.quantization == ffi::v4l2_quantization_V4L2_QUANTIZATION_FULL_RANGE
                 || (pixels.quantization == 0
-                    && colorspace == ffi::v4l2_colorspace_V4L2_COLORSPACE_JPEG)
+                    && (is_rgb || colorspace == ffi::v4l2_colorspace_V4L2_COLORSPACE_JPEG))
         }
     };
     Ok((if full { 2 } else { 1 }, encoding, transfer_function))
@@ -503,16 +511,18 @@ fn resolve_color(pixels: &ffi::v4l2_pix_format, selection: i32) -> Result<(i32, 
 
 impl DmaCapture {
     fn new(configuration: &ffi::mgfr_video_config) -> Result<Self, String> {
+        let source_format = DmaFormat::from_fourcc(configuration.fourcc)?;
         if configuration.path.is_null()
-            || configuration.fourcc != NV12
             || configuration.interval_numerator == 0
             || configuration.interval_denominator == 0
             || !(0..=2).contains(&configuration.color_range)
-            || configuration.width & 1 != 0
-            || configuration.height & 1 != 0
-            || frame_layout(configuration.width, configuration.height).is_none()
+            || source_format
+                .row_bytes(configuration.width, configuration.height)
+                .is_err()
         {
-            return Err("DMA-BUF capture requires a valid progressive NV12 configuration.".into());
+            return Err(
+                "DMA-BUF capture requires a valid progressive raw video configuration.".into(),
+            );
         }
         let path = unsafe { CStr::from_ptr(configuration.path) }.to_string_lossy();
         let file = VideoFile::open(&path)?;
@@ -522,32 +532,25 @@ impl DmaCapture {
         let mut pixels: ffi::v4l2_pix_format = unsafe { std::mem::zeroed() };
         pixels.width = configuration.width;
         pixels.height = configuration.height;
-        pixels.pixelformat = NV12;
+        pixels.pixelformat = configuration.fourcc;
         pixels.field = ffi::v4l2_field_V4L2_FIELD_NONE;
         format.fmt.pix = pixels;
         checked_ioctl(descriptor, SET_FORMAT, &mut format, "Set DMA video format")?;
         let pixels = unsafe { format.fmt.pix };
-        if pixels.pixelformat != NV12
+        if pixels.pixelformat != configuration.fourcc
             || pixels.field != ffi::v4l2_field_V4L2_FIELD_NONE
-            || pixels.width & 1 != 0
-            || pixels.height & 1 != 0
-            || pixels.bytesperline < pixels.width
-            || frame_layout(pixels.width, pixels.height).is_none()
         {
-            return Err("The driver did not negotiate a supported progressive NV12 layout.".into());
+            return Err(
+                "The driver did not negotiate the requested progressive DMA-BUF format.".into(),
+            );
         }
+        let layout = source_format.layout(pixels.width, pixels.height, pixels.bytesperline)?;
         let (color_range, encoding, transfer_function) =
             resolve_color(&pixels, configuration.color_range)?;
-        let uv_offset = u64::from(pixels.bytesperline)
-            .checked_mul(u64::from(pixels.height))
-            .ok_or("NV12 plane offset overflowed.")?;
-        let required_bytes = uv_offset
-            .checked_add(uv_offset / 2)
-            .filter(|length| *length <= MAX_BUFFER_BYTES as u64)
-            .ok_or("NV12 allocation exceeds the DMA buffer budget.")?
-            as usize;
+        let uv_offset = layout.uv_offset;
+        let required_bytes = layout.byte_length;
         if (pixels.sizeimage as usize) < required_bytes {
-            return Err("The negotiated NV12 allocation is too short.".into());
+            return Err("The negotiated DMA-BUF allocation is too short.".into());
         }
         if pixels.sizeimage as usize > MAX_BUFFER_BYTES
             || (pixels.sizeimage as usize)
@@ -672,7 +675,7 @@ impl DmaCapture {
             returns: Arc::new(ReturnQueue::new()),
             reaper,
             info: ffi::mgfr_video_info {
-                fourcc: NV12,
+                fourcc: pixels.pixelformat,
                 width: pixels.width,
                 height: pixels.height,
                 stride: pixels.width * 4,
@@ -807,7 +810,7 @@ impl DmaCapture {
             stride: self.info.bytes_per_line,
             byte_length: self.required_bytes,
             uv_offset: self.uv_offset,
-            fourcc: NV12,
+            fourcc: self.info.fourcc,
             modifier: 0,
             generation: self.generation,
             sequence,
@@ -830,6 +833,7 @@ fn capture_worker(mut capture: DmaCapture, pool: Arc<DmaPool>, status: Arc<DmaSt
                 let previous = pool.latest.lock().unwrap().replace(frame);
                 drop(previous);
                 status.frames.fetch_add(1, Ordering::Relaxed);
+                status.notification.notify();
             }
             Ok(None) => {}
             Err(error) => {
@@ -840,6 +844,7 @@ fn capture_worker(mut capture: DmaCapture, pool: Arc<DmaPool>, status: Arc<DmaSt
     }
     capture.returns.running.store(false, Ordering::Release);
     status.running.store(false, Ordering::Release);
+    status.notification.notify();
 }
 
 fn write_error(pointer: *mut *mut c_char, message: String) {
@@ -879,6 +884,7 @@ pub unsafe extern "C" fn mgfr_dma_video_create(
         latest: Mutex::new(None),
     });
     let status = Arc::new(DmaStatus {
+        notification: NotificationSlot::default(),
         stop: AtomicBool::new(false),
         running: AtomicBool::new(true),
         frames: AtomicU64::new(0),
@@ -991,7 +997,7 @@ fn synchronize_cpu_read(frame: &DmaFrame, ending: bool) -> Result<(), String> {
 
 /// # Safety
 /// The token must remain acquired throughout this diagnostic call. `pixels` must address at least
-/// `capacity` writable bytes and must not overlap the captured NV12 allocation.
+/// `capacity` writable bytes and must not overlap the captured source allocation.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mgfr_dma_copy_rgba(
     token: *mut c_void,
@@ -1383,6 +1389,38 @@ mod tests {
             color_range: 0,
         };
         let failure = DmaCapture::new(&config).err().unwrap();
-        assert!(failure.contains("NV12 configuration"));
+        assert!(failure.contains("MJPEG requires decoding"));
     }
+
+    #[test]
+    fn rgb_range_defaults_ignore_irrelevant_ycbcr_matrix() {
+        let mut pixels: ffi::v4l2_pix_format = unsafe { std::mem::zeroed() };
+        pixels.pixelformat = u32::from_le_bytes(*b"BGR3");
+        pixels.colorspace = ffi::v4l2_colorspace_V4L2_COLORSPACE_SRGB;
+        pixels.__bindgen_anon_1.ycbcr_enc = 7;
+        assert_eq!(resolve_color(&pixels, 0).unwrap(), (2, 0, 2));
+        assert_eq!(resolve_color(&pixels, 1).unwrap(), (1, 0, 2));
+        pixels.quantization = ffi::v4l2_quantization_V4L2_QUANTIZATION_LIM_RANGE;
+        assert_eq!(resolve_color(&pixels, 0).unwrap(), (1, 0, 2));
+        assert_eq!(resolve_color(&pixels, 2).unwrap(), (2, 0, 2));
+        pixels.xfer_func = ffi::v4l2_xfer_func_V4L2_XFER_FUNC_SMPTE2084;
+        assert!(resolve_color(&pixels, 0).is_err());
+    }
+}
+
+/// # Safety
+/// Both handles must be live. The caller serializes control against destruction.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mgfr_dma_video_set_notification(
+    video: *mut c_void,
+    notification: *mut c_void,
+) {
+    if video.is_null() || notification.is_null() {
+        return;
+    }
+    let engine = unsafe { &*video.cast::<DmaEngine>() };
+    engine
+        .status
+        .notification
+        .attach(unsafe { notification::retain(notification) });
 }

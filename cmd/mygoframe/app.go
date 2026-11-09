@@ -4,9 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	"math"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -19,39 +17,40 @@ const audioOff = "Off"
 const defaultOutput = "System default"
 
 type applicationState struct {
-	window             *mygo.Window
-	presentation       *presentationWindow
-	closing            bool
-	worker             *captureWorker
-	devices            []core.VideoDevice
-	audioDevices       core.AudioDevices
-	device             string
-	selection          modeSelection
-	colorRange         string
-	videoBackend       string
-	lastVideoConfig    core.VideoConfig
-	audioSource        string
-	audioOutput        string
-	volume             float64
-	muted              bool
-	running            bool
-	busy               bool
-	fullscreen         bool
-	settingsOpen       bool
-	settingsPage       int
-	notice             string
-	errorMessage       string
-	status             map[string]any
-	bitmap             *ui.Bitmap
-	displayedFrame     *core.Frame
-	detachedPixels     []byte
-	gpuImage           *core.GPUImage
-	gpuFailure         error
-	gpuFallbackPending bool
-	gpuMetrics         []core.GPURenderMetrics
-	measureLatency     bool
-	gpuStartedAt       time.Time
-	gpuPendingViews    uint32
+	window               *mygo.Window
+	presentation         *presentationWindow
+	closing              bool
+	worker               *captureWorker
+	devices              []core.VideoDevice
+	audioDevices         core.AudioDevices
+	device               string
+	selection            modeSelection
+	colorRange           string
+	videoBackend         string
+	audioSource          string
+	audioOutput          string
+	volume               float64
+	muted                bool
+	running              bool
+	busy                 bool
+	fullscreen           bool
+	settingsOpen         bool
+	settingsPage         int
+	notice               string
+	errorMessage         string
+	status               core.SessionSnapshot
+	bitmap               *ui.Bitmap
+	displayedFrame       *core.Frame
+	detachedPixels       []byte
+	gpuImage             *core.GPUImage
+	gpuGeneration        uint64
+	gpuFailure           error
+	gpuFailureGeneration uint64
+	gpuFallbackPending   bool
+	gpuMetrics           []core.GPURenderMetrics
+	measureLatency       bool
+	gpuStartedAt         time.Time
+	gpuPendingViews      uint32
 }
 
 func newApplication() *applicationState {
@@ -78,6 +77,7 @@ func (application *applicationState) retireGPUImage() {
 }
 
 func (application *applicationState) clearPreview() {
+	application.gpuFailure = nil
 	if application.bitmap != nil {
 		application.bitmap.SetGPUReadyCallback(nil)
 	}
@@ -133,36 +133,35 @@ func (application *applicationState) processGPUFailure() {
 	if application.gpuImage != nil {
 		if failure := application.gpuImage.TakeError(); failure != nil {
 			application.gpuFailure = failure
+			application.gpuFailureGeneration = application.gpuGeneration
 		}
 		if !application.gpuImage.Prepared() {
 			application.gpuPendingViews++
 			if application.gpuPendingViews >= 30 && time.Since(application.gpuStartedAt) >= time.Second {
 				application.gpuFailure = errors.New("the selected renderer cannot prepare DMA-BUF images")
+				application.gpuFailureGeneration = application.gpuGeneration
 			}
 		}
+	}
+	// A queued renderer error retains its original session while control requests finish.
+	if application.gpuFailure != nil && application.gpuFailureGeneration != application.status.Generation {
+		application.gpuFailure = nil
 	}
 	if application.gpuFailure == nil || application.worker == nil || application.busy || application.closing {
 		return
 	}
-	configuration := application.lastVideoConfig
 	failure := application.gpuFailure
+	generation := application.gpuFailureGeneration
 	application.gpuFailure = nil
-	if configuration.Path == "" {
-		application.errorMessage = failure.Error()
-		return
-	}
-	configuration.Backend = "cpu"
-	configuration.FallbackReason = failure.Error()
 	application.gpuFallbackPending = true
 	application.clearPreview()
 	application.submit("Switching to CPU video processing…", func(worker *captureWorker) (func(*applicationState), error) {
 		worker.frames.clear()
 		worker.afterSequence = 0
-		err := worker.engine.StartVideo(configuration)
+		err := worker.engine.ReportGPUFailure(generation, failure.Error())
 		return func(application *applicationState) {
 			application.gpuFallbackPending = false
 			application.clearPreview()
-			application.running = err == nil
 		}, err
 	})
 }
@@ -185,6 +184,7 @@ func (application *applicationState) takeFrame() {
 				application.detachPixels()
 				application.retireGPUImage()
 				application.gpuImage = core.NewGPUImage()
+				application.gpuGeneration = application.status.Generation
 				application.gpuStartedAt = time.Now()
 				application.gpuPendingViews = 0
 				application.bitmap = ui.NewExternalBitmap(width, height, application.gpuImage)
@@ -252,51 +252,41 @@ func (application *applicationState) refresh() {
 	selectedPath := application.selectedDevice()
 	selectedSource, selectedOutput := application.audioIDs()
 	application.submit("Discovering capture devices…", func(worker *captureWorker) (func(*applicationState), error) {
-		devices, videoError := core.VideoDevices()
-		audioDevices, audioError := core.ListAudioDevices()
-		var selected core.VideoDevice
-		for _, device := range devices {
-			if device.Path == selectedPath {
-				selected = device
-			}
-		}
-		if selected.Path == "" && len(devices) > 0 {
-			selected = devices[0]
-		}
-		var modes []core.VideoMode
-		var modesError error
-		if selected.Path != "" {
-			modes, modesError = core.VideoModes(selected.Path)
-		}
-		sourcePresent, outputPresent := selectedSource == "", selectedOutput == ""
-		for _, device := range audioDevices.Sources {
-			if device.ID == selectedSource {
-				sourcePresent = true
-			}
-		}
-		for _, device := range audioDevices.Outputs {
-			if device.ID == selectedOutput {
-				outputPresent = true
-			}
-		}
-		if !sourcePresent || !outputPresent {
-			worker.engine.StopAudio()
-		}
+		catalog, err := worker.engine.RefreshDevices(selectedPath, selectedSource, selectedOutput)
 		return func(application *applicationState) {
-			application.devices, application.audioDevices = devices, audioDevices
-			application.device = ""
-			if selected.Path != "" {
-				application.device = videoLabel(selected)
-			}
-			application.selection.setModes(modes)
-			if !sourcePresent || !outputPresent {
-				application.audioSource = audioOff
-			}
-			if !outputPresent {
-				application.audioOutput = defaultOutput
-			}
-		}, errors.Join(videoError, audioError, modesError)
+			application.applyCatalog(catalog, selectedPath)
+		}, err
 	})
+}
+
+// Failed enumerations leave the last displayed list intact until a valid snapshot arrives.
+func (application *applicationState) applyCatalog(catalog core.DeviceCatalog, previousPath string) {
+	if catalog.VideoAvailable {
+		application.devices = catalog.Devices
+		application.device = ""
+		for _, device := range catalog.Devices {
+			if device.Path == catalog.SelectedPath {
+				application.device = videoLabel(device)
+			}
+		}
+	}
+	if catalog.ModesAvailable || (catalog.VideoAvailable && catalog.SelectedPath != previousPath) {
+		application.selection.setModes(catalog.Modes)
+	}
+	if catalog.AudioAvailable {
+		application.audioDevices = catalog.AudioDevices
+		application.audioSource, application.audioOutput = audioOff, defaultOutput
+		for _, device := range catalog.AudioDevices.Sources {
+			if device.ID == catalog.Source {
+				application.audioSource = audioLabel(device)
+			}
+		}
+		for _, device := range catalog.AudioDevices.Outputs {
+			if device.ID == catalog.Output {
+				application.audioOutput = audioLabel(device)
+			}
+		}
+	}
 }
 
 func (application *applicationState) loadModes() {
@@ -323,7 +313,6 @@ func (application *applicationState) startVideo() {
 		rangeValue = 2
 	}
 	config := core.VideoConfig{Path: path, Mode: mode, ColorRange: rangeValue, Backend: application.videoBackend}
-	application.lastVideoConfig = config
 	application.gpuFailure = nil
 	application.gpuFallbackPending = false
 	application.submit("Starting video capture…", func(worker *captureWorker) (func(*applicationState), error) {
@@ -362,11 +351,10 @@ func (application *applicationState) audioIDs() (string, string) {
 func (application *applicationState) changeAudio() {
 	source, output := application.audioIDs()
 	application.submit("Updating audio monitoring…", func(worker *captureWorker) (func(*applicationState), error) {
-		worker.engine.SetVolume(math.Float64frombits(worker.volume.Load()))
-		err := worker.engine.StartAudio(source, output)
-		if err != nil {
-			worker.engine.StopAudio()
+		if controls := worker.controls.Load(); controls != nil {
+			_ = worker.engine.SetAudioControls(*controls)
 		}
+		err := worker.engine.StartAudio(source, output)
 		return func(application *applicationState) {
 			if err != nil {
 				application.audioSource = audioOff
@@ -376,12 +364,8 @@ func (application *applicationState) changeAudio() {
 }
 
 func (application *applicationState) setVolume() {
-	volume := application.volume / 100
-	if application.muted {
-		volume = 0
-	}
 	if application.worker != nil {
-		application.worker.volume.Store(math.Float64bits(volume))
+		application.worker.setAudioControls(core.AudioControls{Volume: application.volume / 100, Muted: application.muted})
 	}
 }
 
@@ -507,30 +491,17 @@ func fitVideoRectangle(bounds ui.Rect, width, height int) ui.Rect {
 	return ui.Rect{X: bounds.X + (bounds.W-fittedWidth)/2, Y: bounds.Y + (bounds.H-fittedHeight)/2, W: fittedWidth, H: fittedHeight}
 }
 
-func actualVideoSummary(status map[string]any) string {
-	video, ok := status["video"].(map[string]any)
-	if !ok || len(video) == 0 {
+func actualVideoSummary(status core.SessionSnapshot) string {
+	video := status.Video
+	if video.Width == 0 || video.Height == 0 {
 		return ""
 	}
-	var parts []string
-	if format, _ := video["format"].(string); format != "" {
-		parts = append(parts, format)
+	result := fmt.Sprintf("%s · %d × %d", video.Format, video.Width, video.Height)
+	if video.IntervalNumerator > 0 {
+		result += fmt.Sprintf(" · %.2f fps", float64(video.IntervalDenominator)/float64(video.IntervalNumerator))
 	}
-	width, _ := video["width"].(float64)
-	height, _ := video["height"].(float64)
-	if width > 0 && height > 0 {
-		parts = append(parts, fmt.Sprintf("%.0f × %.0f", width, height))
+	if label := map[int32]string{0: "Auto", 1: "Limited", 2: "Full"}[video.ColorRange]; label != "" {
+		result += " · " + label
 	}
-	numerator, _ := video["intervalNumerator"].(float64)
-	denominator, _ := video["intervalDenominator"].(float64)
-	if numerator > 0 {
-		parts = append(parts, fmt.Sprintf("%.3f fps", denominator/numerator))
-	}
-	if colorRange, ok := video["colorRange"].(float64); ok {
-		label := map[float64]string{0: "Auto", 1: "Limited", 2: "Full"}[colorRange]
-		if label != "" {
-			parts = append(parts, label+" range")
-		}
-	}
-	return strings.Join(parts, " · ")
+	return result
 }

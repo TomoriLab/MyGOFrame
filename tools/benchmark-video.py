@@ -111,10 +111,10 @@ def number(value, field):
     return value
 
 
-def validate_mode(status, width, height, frames_per_second):
+def validate_mode(status, width, height, frames_per_second, pixel_format="NV12"):
     video = status.get("video", {})
-    if video.get("format") != "NV12" or video.get("width") != width or video.get("height") != height:
-        raise BenchmarkError("The device did not negotiate the requested NV12 dimensions")
+    if video.get("format") != pixel_format or video.get("width") != width or video.get("height") != height:
+        raise BenchmarkError("The device did not negotiate the requested pixel format and dimensions")
     numerator = video.get("intervalNumerator")
     denominator = video.get("intervalDenominator")
     if (not isinstance(numerator, int) or not isinstance(denominator, int)
@@ -238,6 +238,7 @@ def parse_arguments():
     parser.add_argument("--binary", type=Path, default=root / "build/mygoframe")
     parser.add_argument("--seconds", type=float, default=30, help="UI duration per run; must exceed the two-second timing warmup")
     parser.add_argument("--repeats", type=int, default=3, help="Number of CPU/DMA pairs")
+    parser.add_argument("--format", choices=("NV12", "P010", "YUYV", "UYVY", "BGR3", "RGB3"), default="NV12")
     parser.add_argument("--width", type=int, default=3840)
     parser.add_argument("--height", type=int, default=2160)
     parser.add_argument("--fps", default="60")
@@ -255,8 +256,9 @@ def parse_arguments():
         parser.error("--seconds must exceed 2 and --repeats must be positive")
     if min(arguments.width, arguments.height, arguments.window_width, arguments.window_height) <= 0:
         parser.error("video and window dimensions must be positive")
-    if arguments.width % 2 or arguments.height % 2:
-        parser.error("NV12 dimensions must be even")
+    if ((arguments.format not in ("RGB3", "BGR3") and arguments.width % 2)
+            or (arguments.format in ("NV12", "P010") and arguments.height % 2)):
+        parser.error("Dimensions must respect the selected format's chroma subsampling")
     try:
         if Fraction(arguments.fps) <= 0:
             raise ValueError
@@ -303,7 +305,7 @@ def main():
                 name = f"{pair:02d}-{backend}"
                 command = [
                     str(arguments.binary), "--smoke-ui-video", arguments.device,
-                    "--format", "NV12", "--width", str(arguments.width), "--height", str(arguments.height),
+                    "--format", arguments.format, "--width", str(arguments.width), "--height", str(arguments.height),
                     "--fps", arguments.fps, "--color-range", arguments.color_range,
                     "--video-backend", backend, "--measure-latency",
                     "--window-width", str(arguments.window_width), "--window-height", str(arguments.window_height),
@@ -326,7 +328,7 @@ def main():
                     raise BenchmarkError(f"Application did not return JSON; see {stdout_path}") from error
                 run["status"] = status
                 run["metrics"] = validate_status(status, backend, arguments.seconds, arguments.capture_window)
-                validate_mode(status, arguments.width, arguments.height, arguments.fps)
+                validate_mode(status, arguments.width, arguments.height, arguments.fps, arguments.format)
                 run["success"] = True
                 report["summary"] = summarize(report["runs"])
                 write_json(arguments.output, report)

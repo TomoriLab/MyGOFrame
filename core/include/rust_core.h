@@ -51,6 +51,7 @@ typedef struct {
     uint32_t stride;
     uint32_t fourcc;
     size_t byte_length;
+    /* Packed RGB and YUV formats have no second plane and use a zero UV offset. */
     uint64_t uv_offset;
     uint64_t modifier;
     uint64_t generation;
@@ -133,4 +134,10 @@ int32_t mgfr_gpu_timing_mark(uint64_t capture_timestamp_ns, uint64_t sequence,
                             uint64_t context_id);
 char *mgfr_gpu_timings_json(void);
 
+/* Notification handles own one event counter. Returned duplicates belong to the caller. */
+void *mgfr_notification_create(char **error);
+int32_t mgfr_notification_duplicate(void *notification);
+void mgfr_notification_destroy(void *notification);
+void mgfr_video_set_notification(void *video, void *notification);
+void mgfr_dma_video_set_notification(void *video, void *notification);
 #endif

@@ -2,7 +2,8 @@ package main
 
 import (
 	"fmt"
-	"math"
+	"io"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,25 +17,35 @@ type command struct {
 }
 
 type captureWorker struct {
-	engine        *core.Engine
-	window        *mygo.Window
-	presentation  atomic.Pointer[mygo.Window]
-	application   *applicationState
-	commands      chan command
-	stop          chan struct{}
-	done          chan struct{}
-	closing       atomic.Bool
-	closeOnce     sync.Once
-	volume        atomic.Uint64
-	frames        latestSlot[*core.Frame]
-	afterSequence uint64
+	engine         *core.Engine
+	window         *mygo.Window
+	presentation   atomic.Pointer[mygo.Window]
+	application    *applicationState
+	commands       chan command
+	stop           chan struct{}
+	done           chan struct{}
+	closing        atomic.Bool
+	closeOnce      sync.Once
+	controls       atomic.Pointer[core.AudioControls]
+	controlChanged chan struct{}
+	frames         latestSlot[*core.Frame]
+	afterSequence  uint64
+	frameEvents    *os.File
+	frameReady     chan struct{}
+	eventErrors    chan error
+	readerDone     chan struct{}
 }
 
-func newWorker(engine *core.Engine, window *mygo.Window, application *applicationState) *captureWorker {
-	worker := &captureWorker{engine: engine, window: window, application: application, commands: make(chan command, 16), stop: make(chan struct{}), done: make(chan struct{})}
-	worker.volume.Store(math.Float64bits(application.volume / 100))
+func newWorker(engine *core.Engine, window *mygo.Window, application *applicationState) (*captureWorker, error) {
+	events, err := engine.FrameEvents()
+	if err != nil {
+		return nil, err
+	}
+	worker := &captureWorker{engine: engine, window: window, application: application, commands: make(chan command, 16), stop: make(chan struct{}), done: make(chan struct{}), controlChanged: make(chan struct{}, 1), frameEvents: events, frameReady: make(chan struct{}, 1), eventErrors: make(chan error, 1), readerDone: make(chan struct{})}
+	worker.setAudioControls(core.AudioControls{Volume: application.volume / 100, Muted: application.muted})
+	go worker.readFrameEvents()
 	go worker.run()
-	return worker
+	return worker, nil
 }
 
 func (worker *captureWorker) post(apply func(*applicationState)) {
@@ -53,10 +64,9 @@ func (worker *captureWorker) run() {
 	defer close(worker.done)
 	defer worker.engine.Close()
 	defer worker.frames.clear()
-	ticker := time.NewTicker(2 * time.Millisecond)
+	defer func() { _ = worker.frameEvents.Close(); <-worker.readerDone }()
+	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
-	lastStatus := time.Time{}
-	lastVolume := math.Inf(-1)
 	lastFrameError := ""
 	for {
 		select {
@@ -64,22 +74,32 @@ func (worker *captureWorker) run() {
 			return
 		case operation := <-worker.commands:
 			apply, err := operation.run(worker)
+			snapshot, snapshotError := worker.engine.Snapshot()
 			worker.post(func(application *applicationState) {
 				application.busy = false
 				application.notice = ""
 				if apply != nil {
 					apply(application)
 				}
+				if snapshotError == nil {
+					application.applySnapshot(snapshot)
+				}
 				if err != nil {
 					application.errorMessage = err.Error()
 				}
 			})
-		case now := <-ticker.C:
-			volume := math.Float64frombits(worker.volume.Load())
-			if volume != lastVolume {
-				worker.engine.SetVolume(volume)
-				lastVolume = volume
+		case <-worker.controlChanged:
+			if controls := worker.controls.Load(); controls != nil {
+				_ = worker.engine.SetAudioControls(*controls)
 			}
+		case err := <-worker.eventErrors:
+			worker.post(func(application *applicationState) {
+				application.errorMessage = err.Error()
+				application.running = false
+				application.clearPreview()
+			})
+			return
+		case <-worker.frameReady:
 			frame, err := worker.engine.AcquireFrame(worker.afterSequence)
 			if err != nil && err.Error() != lastFrameError {
 				lastFrameError = err.Error()
@@ -93,34 +113,38 @@ func (worker *captureWorker) run() {
 					window.Invalidate()
 				}
 			}
-			if now.Sub(lastStatus) >= 200*time.Millisecond {
-				lastStatus = now
-				status, err := worker.engine.Status()
-				if running, ok := status["videoRunning"].(bool); ok && !running {
-					worker.frames.clear()
-				}
-				worker.post(func(application *applicationState) {
-					if err != nil {
-						application.errorMessage = err.Error()
-						return
-					}
-					application.status = status
-					if message, _ := status["error"].(string); message != "" {
-						application.errorMessage = message
-					}
-					if audio, ok := status["audio"].(map[string]any); ok {
-						if message, _ := audio["error"].(string); message != "" {
-							application.errorMessage = message
-						}
-					}
-					if running, ok := status["videoRunning"].(bool); ok {
-						if !running && application.running {
-							application.clearPreview()
-						}
-						application.running = running
-					}
-				})
+		case <-ticker.C:
+			status, err := worker.engine.Snapshot()
+			if err == nil && !status.VideoRunning {
+				worker.frames.clear()
 			}
+			worker.post(func(application *applicationState) {
+				if err != nil {
+					application.errorMessage = err.Error()
+					return
+				}
+				application.applySnapshot(status)
+			})
+		}
+	}
+}
+
+func (worker *captureWorker) readFrameEvents() {
+	defer close(worker.readerDone)
+	var counter [8]byte
+	for {
+		if _, err := io.ReadFull(worker.frameEvents, counter[:]); err != nil {
+			if !worker.closing.Load() {
+				select {
+				case worker.eventErrors <- fmt.Errorf("read frame notification: %w", err):
+				default:
+				}
+			}
+			return
+		}
+		select {
+		case worker.frameReady <- struct{}{}:
+		default:
 		}
 	}
 }
@@ -145,16 +169,40 @@ func (application *applicationState) submit(notice string, run func(*captureWork
 	}
 }
 
-func statusSummary(status map[string]any) string {
-	if len(status) == 0 {
+func (worker *captureWorker) setAudioControls(controls core.AudioControls) {
+	worker.controls.Store(&controls)
+	select {
+	case worker.controlChanged <- struct{}{}:
+	default:
+	}
+}
+
+func (application *applicationState) applySnapshot(status core.SessionSnapshot) {
+	if status.CommandID < application.status.CommandID {
+		return
+	}
+	application.status = status
+	if status.Error != "" {
+		application.errorMessage = status.Error
+	}
+	if status.Audio.Error != "" {
+		application.errorMessage = status.Audio.Error
+	}
+	if !status.VideoRunning && application.running {
+		application.clearPreview()
+	}
+	application.running = status.VideoRunning
+}
+
+func statusSummary(status core.SessionSnapshot) string {
+	if status.SchemaVersion == 0 {
 		return "Ready"
 	}
-	frames, _ := status["frames"].(float64)
-	dropped, _ := status["droppedFrames"].(float64)
-	summary := fmt.Sprintf("Captured %.0f frames · skipped %.0f frames", frames, dropped)
-	if backend, _ := status["videoBackend"].(string); backend == "dmabuf" {
+	summary := fmt.Sprintf("Captured %d frames · skipped %d frames", status.Frames, status.DroppedFrames)
+	if status.VideoBackend == "dmabuf" {
 		return "DMA-BUF · " + summary
-	} else if backend == "cpu" {
+	}
+	if status.VideoBackend == "cpu" {
 		return "CPU · " + summary
 	}
 	return summary

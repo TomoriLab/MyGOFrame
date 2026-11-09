@@ -16,14 +16,16 @@ import (
 )
 
 const (
-	modeVariable         = "MYGOFRAME_NATIVE_RUNTIME"
-	directoryVariable    = "MYGOFRAME_NATIVE_RUNTIME_DIR"
-	activeVariable       = "MYGOFRAME_NATIVE_RUNTIME_ACTIVE"
-	moduleVariable       = "GTK_PATH"
-	moduleActiveVariable = "MYGOFRAME_GTK_MODULE_RUNTIME_ACTIVE"
-	loaderVariable       = "LD_LIBRARY_PATH"
-	maximumManifest      = 1024 * 1024
-	maximumLibrary       = 128 * 1024 * 1024
+	modeVariable          = "MYGOFRAME_NATIVE_RUNTIME"
+	directoryVariable     = "MYGOFRAME_NATIVE_RUNTIME_DIR"
+	activeVariable        = "MYGOFRAME_NATIVE_RUNTIME_ACTIVE"
+	moduleVariable        = "GTK_PATH"
+	moduleActiveVariable  = "MYGOFRAME_GTK_MODULE_RUNTIME_ACTIVE"
+	textureVariable       = "MYGO_GL_GLES_OPAQUE_TEXTURE"
+	textureActiveVariable = "MYGOFRAME_GLES_TEXTURE_RUNTIME_ACTIVE"
+	loaderVariable        = "LD_LIBRARY_PATH"
+	maximumManifest       = 1024 * 1024
+	maximumLibrary        = 128 * 1024 * 1024
 )
 
 type library struct {
@@ -40,6 +42,7 @@ type manifest struct {
 	Libraries           map[string]library `json:"libraries"`
 	GTKModules          map[string]library `json:"gtkModules"`
 	SystemCompatibility map[string]library `json:"systemCompatibility"`
+	Features            map[string]bool    `json:"features"`
 }
 
 type launch struct {
@@ -117,7 +120,8 @@ func plan(config configuration) (*launch, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !changed && !moduleChanged {
+		environment, textureChanged := opaqueTextureEnvironment(environment, metadata.Features["glesOpaqueTexture"])
+		if !changed && !moduleChanged && !textureChanged {
 			return nil, nil
 		}
 		return &launch{Environment: environment, Directory: directory}, nil
@@ -126,7 +130,7 @@ func plan(config configuration) (*launch, error) {
 }
 
 func systemLaunch(environment []string, values map[string]string) *launch {
-	if values[activeVariable] == "" && values[moduleActiveVariable] == "" {
+	if values[activeVariable] == "" && values[moduleActiveVariable] == "" && values[textureActiveVariable] == "" {
 		return nil
 	}
 	result := environment
@@ -136,7 +140,33 @@ func systemLaunch(environment []string, values map[string]string) *launch {
 		result = replaceVariable(result, loaderVariable, path, path == "")
 	}
 	result = removeModuleEnvironment(result)
+	result, _ = opaqueTextureEnvironment(result, false)
 	return &launch{Environment: result}
+}
+
+// Only a verified runtime advertises the GLES opaque texture path; explicit overrides remain owned by the caller.
+func opaqueTextureEnvironment(environment []string, available bool) ([]string, bool) {
+	values := environmentValues(environment)
+	managed := values[textureActiveVariable] != ""
+	if managed && values[textureVariable] != "1" {
+		// A caller changed the inherited setting after activation and now owns it.
+		return replaceVariable(environment, textureActiveVariable, "", true), true
+	}
+	if !available {
+		if !managed {
+			return environment, false
+		}
+		result := replaceVariable(environment, textureVariable, "", true)
+		return replaceVariable(result, textureActiveVariable, "", true), true
+	}
+	if _, explicit := values[textureVariable]; explicit && !managed {
+		return environment, false
+	}
+	if managed && values[textureVariable] == "1" {
+		return environment, false
+	}
+	result := replaceVariable(environment, textureVariable, "1", false)
+	return replaceVariable(result, textureActiveVariable, "1", false), true
 }
 
 func removeModuleEnvironment(environment []string) []string {

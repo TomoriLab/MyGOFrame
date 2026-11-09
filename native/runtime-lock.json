@@ -1,4 +1,7 @@
 {
+  "features": {
+    "glesOpaqueTexture": true
+  },
   "gtkModuleBuild": {
     "patches": [
       {
@@ -114,6 +117,10 @@
         {
           "file": "native/patches/gtk-3.24.52-settings-owners.patch",
           "sha256": "21ea35938391e2f0eafb6c2e47c86715646d40513d0e17e2304e168718a9404f"
+        },
+        {
+          "file": "native/patches/gtk-3.24.52-gles-opaque-texture.patch",
+          "sha256": "f41143f0653597f618581e333dd036d4adb974bcb25819980b3a904906c2a8fb"
         }
       ],
       "soname": "libgdk-3.so.0",

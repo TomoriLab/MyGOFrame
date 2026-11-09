@@ -1,3 +1,11 @@
+mygoframe (0.1.1-1) unstable; urgency=medium
+
+  * Package the current Go UI, Swift session policies, and Rust media core.
+  * Include multi-format DMA-BUF capture and memory ownership fixes.
+  * Bundle the corrected native runtime with opaque GLES texture composition.
+
+ -- Euiseo Cha <escha@zeroday0619.dev>  Mon, 09 Nov 2026 11:28:18 +0900
+
 mygoframe (0.1.0-1) unstable; urgency=medium
 
   * Initial local Debian packaging.

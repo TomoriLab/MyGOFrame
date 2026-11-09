@@ -32,8 +32,8 @@ is required; Debian rustc/cargo or an installed rustup toolchain can be used.
 
 To rebuild the prepared source package:
 
-  dpkg-source -x mygoframe_0.1.0-1.dsc
-  cd mygoframe-0.1.0
+  dpkg-source -x mygoframe_0.1.1-1.dsc
+  cd mygoframe-0.1.1
   DEB_BUILD_PROFILES=pkg.mygoframe.external-toolchains dpkg-buildpackage -b -us -uc
 
 The Go executable and Swift facade are built with hardening flags. Swift

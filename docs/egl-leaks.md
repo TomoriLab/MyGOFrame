@@ -70,6 +70,6 @@ Real MyGo checks completed window recreation, resizing, fullscreen entry/exit, a
 
 ## Separate GUI allocation results
 
-The full GUI process is not reported as leak-free. The subsequent [native text ownership audit](font-memory.md) adds terminal release of MyGo's own Pango map, context, fonts, and caches. It also identifies the smaller configuration signature as a Fontconfig relative-offset reachability false positive through native owner-retained and owner-released controls. The report remains visible. No production `FcFini` or font-cache suppression was added.
+The original driver verification still reported allocations in the text stack. The subsequent [native text ownership audit](font-memory.md) adds terminal release of MyGo's Pango map, context, fonts, and caches. Isolated controls identify the remaining configuration signature as retained Fontconfig state whose relative offsets are invisible to LSan. Terminal native shutdown now drops the current-configuration reference with `FcConfigSetCurrent(NULL)` after native clients stop. It does not call `FcFini` or suppress font-cache reports.
 
-Native EGL, color, and asynchronous capture checks return zero with leak detection enabled. The separate full-GUI run retains its nonzero sanitizer result. This distinction prevents the successful driver fix from being reported as a resolution of every GUI allocation.
+Native EGL/color checks and complete GUI checks remain separate validation gates. A successful driver-only check does not establish clean application shutdown. Record the actual complete-GUI exit status and every reported allocation.

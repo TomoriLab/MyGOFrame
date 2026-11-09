@@ -40,7 +40,7 @@ GTK's internal tooltip can destroy its window from a display-closed callback. Th
 
 The existing NVIDIA policy selects Mesa DRI/Zink only when its compatibility conditions permit it. Explicit graphics settings remain authoritative. Forcing the original NVIDIA GBM path can still reproduce its separate modifier-storage leak. See [EGL allocation paths](egl-leaks.md).
 
-The full GUI retains the independently reproduced Fontconfig relative-offset reachability report of 14,841 bytes in 222 allocations and actual LSan exit 23. No report filtering, suppression, ignored objects, added roots, global D-Bus shutdown, or private pointer freeing is used. A font-only result does not establish that the process exits cleanly under LSan or that every driver/input device is validated. See [Fontconfig controls](font-memory.md).
+The original display/input-method verification retained the independently reproduced Fontconfig relative-offset reachability report of 14,841 bytes in 222 allocations and actual LSan exit 23. The subsequent terminal current-configuration release resolves that signature through the public Fontconfig API. No report filtering, suppression, ignored objects, added roots, global D-Bus shutdown, or private pointer freeing is used. A font-only result does not establish that the process exits cleanly under LSan or that every driver/input device is validated. See [Fontconfig controls](font-memory.md).
 
 ## Reproduction
 

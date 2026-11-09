@@ -1,3 +1,4 @@
+use crate::dma_format::DmaFormat;
 use crate::{dma, ffi, make_c_string};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{CStr, c_char, c_void};
@@ -238,7 +239,7 @@ struct ImportedPlane {
     texture: u32,
 }
 struct Imported {
-    planes: [ImportedPlane; 2],
+    planes: Vec<ImportedPlane>,
 }
 
 struct PlaneLayout {
@@ -294,7 +295,7 @@ fn import_plane(
         )
     };
     if image.is_null() {
-        return Err("Unable to import an NV12 component plane into EGL.".into());
+        return Err("Unable to import a raw component plane into EGL.".into());
     }
     let mut texture = 0;
     unsafe {
@@ -313,7 +314,7 @@ fn import_plane(
             (api.destroy_image)(display, image)
         };
         return Err(format!(
-            "Bind an NV12 component plane: GL error {failure:#x}."
+            "Bind a raw component plane: GL error {failure:#x}."
         ));
     }
     Ok(ImportedPlane { image, texture })
@@ -335,6 +336,26 @@ fn color_coefficients(encoding: u32) -> ([f32; 3], [f32; 3], [f32; 3]) {
     }
 }
 
+fn sample_normalization(format: DmaFormat, full_range: bool) -> ([f32; 3], [f32; 3]) {
+    let (maximum, black, neutral, luma_span, chroma_span) = if format == DmaFormat::P010 {
+        (1023.0, 64.0, 512.0, 876.0, 896.0)
+    } else {
+        (255.0, 16.0, 128.0, 219.0, 224.0)
+    };
+    if full_range {
+        ([0.0, neutral / maximum, neutral / maximum], [1.0; 3])
+    } else {
+        (
+            [black / maximum, neutral / maximum, neutral / maximum],
+            [
+                maximum / luma_span,
+                maximum / chroma_span,
+                maximum / chroma_span,
+            ],
+        )
+    }
+}
+
 const VERTEX_SHADER: &CStr = c"#version 300 es
 out vec2 uv;
 void main() {
@@ -344,27 +365,52 @@ void main() {
     gl_Position = vec4(position, 0., 1.);
 }";
 
-// Raw R8 chroma bytes avoid driver-dependent RG88 channel order and YUV range hints.
+// Raw R8 bytes avoid driver-dependent channel order, 16-bit import support, and YUV range hints.
 const FRAGMENT_SHADER: &CStr = c"#version 300 es
 #extension GL_OES_EGL_image_external_essl3 : require
 precision highp float;
+precision highp int;
 uniform highp samplerExternalOES lumaTexture;
 uniform highp samplerExternalOES chromaTexture;
+uniform int inputFormat;
 uniform vec3 scaling;
+uniform vec3 sampleOffsets;
 uniform vec3 imageDimensions;
 uniform vec3 redRow;
 uniform vec3 greenRow;
 uniform vec3 blueRow;
 in vec2 uv;
 out vec4 color;
+float sourceByte(float column) {
+    return texture(lumaTexture, vec2((column + .5) / imageDimensions.z, uv.y)).r;
+}
+float chromaByte(float column) {
+    return texture(chromaTexture, vec2((column + .5) / imageDimensions.z, uv.y)).r;
+}
+float word10(float low, float high) {
+    return floor((floor(low * 255. + .5) + floor(high * 255. + .5) * 256.) / 64.) / 1023.;
+}
 void main() {
-    float pair = floor(uv.x * imageDimensions.x * .5);
-    vec2 chromaUV = vec2((pair * 2. + .5) / imageDimensions.x, uv.y);
-    float blue = texture(chromaTexture, chromaUV).r;
-    float red = texture(chromaTexture, chromaUV + vec2(1. / imageDimensions.x, 0.)).r;
-    vec3 samples = (vec3(texture(lumaTexture, uv).r, blue, red)
-        - vec3(scaling.x, 128. / 255., 128. / 255.))
-        * vec3(scaling.y, scaling.z, scaling.z);
+    float pixel = min(floor(uv.x * imageDimensions.x), imageDimensions.x - 1.);
+    float pair = floor(pixel * .5);
+    vec3 samples;
+    if (inputFormat == 0) {
+        samples = vec3(sourceByte(pixel), chromaByte(pair * 2.), chromaByte(pair * 2. + 1.));
+    } else if (inputFormat == 1) {
+        samples = vec3(word10(sourceByte(pixel * 2.), sourceByte(pixel * 2. + 1.)),
+            word10(chromaByte(pair * 4.), chromaByte(pair * 4. + 1.)),
+            word10(chromaByte(pair * 4. + 2.), chromaByte(pair * 4. + 3.)));
+    } else if (inputFormat == 2) {
+        samples = vec3(sourceByte(pixel * 2.), sourceByte(pair * 4. + 1.), sourceByte(pair * 4. + 3.));
+    } else if (inputFormat == 3) {
+        samples = vec3(sourceByte(pixel * 2. + 1.), sourceByte(pair * 4.), sourceByte(pair * 4. + 2.));
+    } else {
+        samples = vec3(sourceByte(pixel * 3.), sourceByte(pixel * 3. + 1.), sourceByte(pixel * 3. + 2.));
+        if (inputFormat == 4) samples = samples.bgr;
+        color = vec4((samples - vec3(sampleOffsets.x)) * scaling.x, 1.);
+        return;
+    }
+    samples = (samples - sampleOffsets) * scaling;
     color = vec4(dot(redRow, samples), dot(greenRow, samples), dot(blueRow, samples), 1.);
 }";
 
@@ -414,7 +460,9 @@ impl Renderer {
                 .split_whitespace()
                 .any(|name| name == "GL_OES_EGL_image_external_essl3")
         {
-            return Err("External NV12 sampling is unavailable in this graphics context.".into());
+            return Err(
+                "External component sampling is unavailable in this graphics context.".into(),
+            );
         }
         let extensions = unsafe { (api.query_string)(display, 0x3055) };
         if extensions.is_null()
@@ -518,15 +566,30 @@ impl Renderer {
             }
         }
     }
-    fn render(&mut self, token: *mut c_void) -> Result<u32, String> {
+    fn render(&mut self, frame: Arc<dma::DmaFrame>) -> Result<u32, String> {
         if !self.is_current() {
             return Err("GPU renderer used with a different graphics context.".into());
         }
-        let frame = unsafe { dma::retain_frame(token) };
         if frame.generation == self.generation && frame.sequence == self.sequence {
             return Ok(self.texture);
         }
         let started = monotonic_ns();
+        let source_format = DmaFormat::from_fourcc(frame.fourcc)?;
+        let layout = source_format.layout(frame.width, frame.height, frame.stride)?;
+        if frame.uv_offset != layout.uv_offset
+            || frame.byte_length < layout.byte_length
+            || frame.modifier != 0
+        {
+            return Err("Invalid DMA-BUF source layout for GPU conversion.".into());
+        }
+        let mut maximum_size = 0;
+        unsafe { (self.api.get_integer)(0x0D33, &mut maximum_size) };
+        if maximum_size <= 0
+            || layout.row_bytes > maximum_size as u32
+            || frame.height > maximum_size as u32
+        {
+            return Err("The raw component image exceeds the graphics texture size limit.".into());
+        }
         if self.needs_cache_writeback {
             frame.ensure_gpu_visibility()?;
         }
@@ -543,40 +606,39 @@ impl Renderer {
                 self.display,
                 frame.descriptor(),
                 PlaneLayout {
-                    width: frame.width,
+                    width: layout.row_bytes,
                     height: frame.height,
                     stride: frame.stride,
                     offset: 0,
                     fourcc: u32::from_le_bytes(*b"R8  "),
                 },
             )?;
-            let chroma = match import_plane(
-                api,
-                self.display,
-                frame.descriptor(),
-                PlaneLayout {
-                    width: frame.width,
-                    height: frame.height / 2,
-                    stride: frame.stride,
-                    offset: frame.uv_offset,
-                    fourcc: u32::from_le_bytes(*b"R8  "),
-                },
-            ) {
-                Ok(plane) => plane,
-                Err(error) => {
-                    unsafe {
-                        (api.delete_textures)(1, &luma.texture);
-                        (api.destroy_image)(self.display, luma.image)
-                    };
-                    return Err(error);
-                }
-            };
-            self.imports.insert(
-                frame.index,
-                Imported {
-                    planes: [luma, chroma],
-                },
-            );
+            let mut planes = vec![luma];
+            if source_format.is_planar() {
+                let chroma = match import_plane(
+                    api,
+                    self.display,
+                    frame.descriptor(),
+                    PlaneLayout {
+                        width: layout.row_bytes,
+                        height: frame.height / 2,
+                        stride: frame.stride,
+                        offset: frame.uv_offset,
+                        fourcc: u32::from_le_bytes(*b"R8  "),
+                    },
+                ) {
+                    Ok(plane) => plane,
+                    Err(error) => {
+                        unsafe {
+                            (api.delete_textures)(1, &planes[0].texture);
+                            (api.destroy_image)(self.display, planes[0].image)
+                        };
+                        return Err(error);
+                    }
+                };
+                planes.push(chroma);
+            }
+            self.imports.insert(frame.index, Imported { planes });
         }
         unsafe {
             (api.bind_texture)(0x0DE1, self.texture);
@@ -616,12 +678,17 @@ impl Renderer {
             (api.active_texture)(0x84C0);
             (api.bind_texture)(0x8D65, imported.planes[0].texture);
             (api.active_texture)(0x84C1);
-            (api.bind_texture)(0x8D65, imported.planes[1].texture);
+            // Both active samplers need a complete binding even when the packed branch ignores chroma.
+            (api.bind_texture)(0x8D65, imported.planes.last().unwrap().texture);
+            (api.uniform_integer)(
+                (api.uniform_location)(self.program, c"inputFormat".as_ptr()),
+                source_format as i32,
+            );
             (api.uniform_three)(
                 (api.uniform_location)(self.program, c"imageDimensions".as_ptr()),
                 frame.width as f32,
                 frame.height as f32,
-                0.0,
+                layout.row_bytes as f32,
             );
             let (red, green, blue) = color_coefficients(frame.encoding);
             for (name, row) in [(c"redRow", red), (c"greenRow", green), (c"blueRow", blue)] {
@@ -632,16 +699,18 @@ impl Renderer {
                     row[2],
                 );
             }
-            let (offset, luma_scale, chroma_scale) = if frame.color_range == 2 {
-                (0.0, 1.0, 1.0)
-            } else {
-                (16.0 / 255.0, 255.0 / 219.0, 255.0 / 224.0)
-            };
+            let (offsets, scales) = sample_normalization(source_format, frame.color_range == 2);
+            (api.uniform_three)(
+                (api.uniform_location)(self.program, c"sampleOffsets".as_ptr()),
+                offsets[0],
+                offsets[1],
+                offsets[2],
+            );
             (api.uniform_three)(
                 (api.uniform_location)(self.program, c"scaling".as_ptr()),
-                offset,
-                luma_scale,
-                chroma_scale,
+                scales[0],
+                scales[1],
+                scales[2],
             );
             (api.viewport)(0, 0, frame.width as i32, frame.height as i32);
             (api.draw)(0x0004, 0, 3);
@@ -650,7 +719,7 @@ impl Renderer {
         if error != 0 {
             // Exceptional completion prevents an in-flight read from outliving its lease.
             unsafe { (api.finish)() };
-            return Err(format!("Convert NV12 image: GL error {error:#x}."));
+            return Err(format!("Convert DMA-BUF image: GL error {error:#x}."));
         }
         let fence = match native_fence(api, self.display) {
             Ok(fence) => fence,
@@ -760,7 +829,7 @@ pub unsafe extern "C" fn mgfr_gpu_render(
         return 0;
     }
     let renderer = unsafe { &mut *renderer.cast::<Renderer>() };
-    match renderer.render(token) {
+    match renderer.render(unsafe { dma::retain_frame(token) }) {
         Ok(value) => {
             unsafe {
                 *texture = value;
@@ -806,7 +875,7 @@ pub unsafe extern "C" fn mgfr_gpu_readback(
         return 0;
     }
     let renderer = unsafe { &mut *renderer.cast::<Renderer>() };
-    if let Err(message) = renderer.render(token) {
+    if let Err(message) = renderer.render(unsafe { dma::retain_frame(token) }) {
         set_error(error, message);
         return 0;
     }
