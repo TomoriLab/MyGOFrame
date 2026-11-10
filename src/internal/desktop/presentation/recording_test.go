@@ -38,7 +38,7 @@ func TestSettingsOverviewAndDetailStayInsidePanel(t *testing.T) {
 		if err := tester.Click("Recording settings"); err != nil {
 			t.Fatal(err)
 		}
-		if application.settingsPage != 2 || !tester.HasText("Video recording") {
+		if application.settingsPage != 2 || !tester.HasText("Capture recording") {
 			t.Fatal("recording card did not open its detail")
 		}
 		if err := tester.Click("Back to settings"); err != nil {

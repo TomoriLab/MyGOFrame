@@ -1,6 +1,6 @@
 # MyGOFrame
 
-MyGOFrame is a Linux capture-card viewer for playing console games through a capture preview. Its [MyGo native UI](https://mygo.egoist.dev/docs/ui) follows Fluent 2-inspired styling and the system's light or dark appearance. The settings overview opens Video, Audio, Recording, Presets, and App settings detail pages.
+MyGOFrame is a Linux capture-card viewer for playing console games through a capture preview. Its [MyGo native UI](https://mygo.egoist.dev/docs/ui) follows Fluent 2-inspired styling and the system's light or dark appearance. The settings overview opens Capture, Audio, Recording, Presets, and App settings detail pages.
 
 ## Features
 
@@ -25,11 +25,11 @@ Supported video formats are YUYV, UYVY, NV12, P010, BGR24, RGB24, and MJPEG. The
 
 For devices exposing continuous or stepwise capabilities, the menus include supported common modes and valid range endpoints. They do not enumerate every possible resolution or frame interval.
 
-When presets are saved, the top quick controls provide a preset selector and Start video. Selecting another preset during capture restarts video with that configuration. During recording, preset switching is locked. The last selected preset is remembered; launching the application does not start capture automatically.
+When presets are saved, the top quick controls provide a preset selector and Start capture. Selecting another preset during capture restarts video with that configuration. During recording, preset switching is locked. The last selected preset is remembered; launching the application does not start capture automatically.
 
 ## Recording
 
-Start video and select the capture card's microphone/input device in Audio when sound is required. Open Recording, choose a detected GPU, codec, target bitrate, rate control, and an absolute `.mkv` or `.mp4` output path. An empty path creates a unique file under `~/Videos/MyGOFrame/`. Start recording from that page or the command bar. Stop recording finalizes the file while preview continues. Stopping video or closing the application also finalizes recording.
+Start capture and select the capture card's microphone/input device in Audio when sound is required. Open Recording, choose a detected GPU, codec, target bitrate, rate control, and an absolute `.mkv` or `.mp4` output path. An empty path creates a unique file under `~/Videos/MyGOFrame/`. Start recording from that page or the command bar. Stop recording finalizes the file while preview continues. Stopping video or closing the application also finalizes recording.
 
 Monitor audio controls only the speaker branch. Monitor volume, mute, and output changes do not change recorded input levels. Audio input changes are locked during recording. Saved presets include recording configuration and monitoring selection; applying a preset never starts recording.
 
@@ -83,7 +83,7 @@ Keep `build/mygoframe`, `build/libmygoframe_core.so`, and `build/libmygoframe_me
 
 Register the launcher and Wayland taskbar icon for the current user with `make install-desktop`. This renders a 512 × 512 PNG with transparent rounded corners under `$XDG_DATA_HOME/mygoframe` and creates `$XDG_DATA_HOME/applications/mygoframe.desktop`, using `~/.local/share` when `XDG_DATA_HOME` is unset. Run the command again after moving the project because the launcher uses the absolute executable path.
 
-Select the capture device and video settings, then start the preview. Select the capture card's audio source to enable monitoring. Audio starts disabled so an unrelated microphone is never selected automatically. Refresh the device list after connecting or removing hardware. Device access follows the session's existing permissions.
+Select the capture device and capture settings, then start the preview. Select the capture card's audio source to enable monitoring. Audio starts disabled so an unrelated microphone is never selected automatically. Refresh the device list after connecting or removing hardware. Device access follows the session's existing permissions.
 
 The preview scales to the available space and adds black borders when the window and video have different aspect ratios. Capture resolution does not determine the minimum window size. Windows smaller than 800 logical pixels wide or 480 pixels high move the controls into a scrollable **Settings** dialog so the sidebar cannot consume the video viewport. The minimum window content size is 320 × 240. Use `--window-width` and `--window-height` to select the initial size.
 
@@ -107,7 +107,7 @@ Use `./build/mygoframe --debug` for one launch or `--debug=false` to override a 
 
 Open **Settings → Presets**, enter a name, and select **Save new preset**. Presets store the selected video device and exact mode, color range, processing backend, audio source and output, volume, mute, and whether the capture window is open. **Update preset** replaces the selected preset with the current settings. **Delete preset** asks for confirmation.
 
-Stop video before selecting **Apply preset**. The application checks that the saved devices and mode are available, restores the controls, and applies the saved audio monitoring selection. Start video when ready. Presets remain available after restarting the application; startup does not apply them or start monitoring automatically.
+Stop capture before selecting **Apply preset**. The application checks that the saved devices and mode are available, restores the controls, and applies the saved audio monitoring selection. Start capture when ready. Presets remain available after restarting the application; startup does not apply them or start monitoring automatically.
 
 Presets are stored in `$XDG_CONFIG_HOME/mygoframe/presets.json`, or `~/.config/mygoframe/presets.json` by default. **Reload presets** refreshes the list after another instance changes it. Invalid or unsupported files are not overwritten. Save failures appear in the Presets tab. Storage limits and recovery are documented in [Settings preset storage](docs/presets.md).
 

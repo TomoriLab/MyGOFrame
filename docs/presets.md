@@ -4,7 +4,7 @@ The MyGo native Presets page lists named capture configurations. Users can save 
 
 ## Stored settings
 
-Each preset records a normalized name, video device path and name, FourCC, dimensions, exact rational frame interval, color range, requested processing backend, audio source and output IDs, monitoring volume and mute, and capture-window visibility. It does not record a frame pointer, session handle, renderer ID, negotiated fallback result, or live capture state. Applying a preset starts its selected audio input with the saved monitoring policy; video still requires Start video when capture is stopped. Startup restores the last selected name and never starts video or recording automatically.
+Each preset records a normalized name, video device path and name, FourCC, dimensions, exact rational frame interval, color range, requested processing backend, audio source and output IDs, monitoring volume and mute, and capture-window visibility. It does not record a frame pointer, session handle, renderer ID, negotiated fallback result, or live capture state. Applying a preset starts its selected audio input with the saved monitoring policy; video still requires Start capture when capture is stopped. Startup restores the last selected name and never starts video or recording automatically.
 
 Swift re-enumerates the devices and modes before applying. The video device path and saved name must match. The format, dimensions, and rational frame interval must be available; equivalent rational intervals are accepted without floating-point conversion. A missing source or an explicitly selected missing output rejects the preset. An empty source means monitoring is off; an empty output follows the current system default. Validation failures leave the session unchanged. A later audio-open failure is reported and restores the previous gain policy, but the old audio stream has already stopped.
 
@@ -12,7 +12,7 @@ Device paths follow the existing V4L2 enumeration. If device numbering changes, 
 
 ## Quick start and switching
 
-When saved presets exist, the command area shows a preset selector and Start video. Start video validates the selected preset, applies its audio/settings policy, and starts capture through one Swift session transition. Stop video stops capture and finalizes an active recording through the existing stop policy.
+When saved presets exist, the command area shows a preset selector and Start capture. Start capture validates the selected preset, applies its audio/settings policy, and starts capture through one Swift session transition. Stop capture stops capture and finalizes an active recording through the existing stop policy.
 
 Changing the quick selector while video is running validates the new devices and mode before stopping the old session, then resumes capture with the new settings. A prevalidation failure preserves the current session. A later open failure attempts to restore the previous audio policy/input and video configuration; restoration failures are included in the error. Changing selection while stopped applies configuration and audio without starting video. Recording never starts automatically. The selector is disabled while recording or finalizing.
 

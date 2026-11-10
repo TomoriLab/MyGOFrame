@@ -13,7 +13,7 @@ func TestSettingsCategoriesPreserveSelections(t *testing.T) {
 	application.volume = 35
 	application.muted = true
 	tester := ui.NewTester(application.view, 1280, 800)
-	for _, label := range []string{"Audio", "Video", "Audio"} {
+	for _, label := range []string{"Audio", "Capture", "Audio"} {
 		if err := tester.Click(label); err != nil {
 			t.Fatal(err)
 		}
@@ -95,7 +95,7 @@ func TestSettingsOrderToolbarGroupingAndThemeSwitch(t *testing.T) {
 		t.Fatal("redundant Sharing category remains")
 	}
 	previous := float32(-1)
-	for _, label := range []string{"Video settings", "Audio settings", "Recording settings", "Presets settings", "Open app settings", "About settings"} {
+	for _, label := range []string{"Open capture settings", "Audio settings", "Recording settings", "Presets settings", "Open app settings", "About settings"} {
 		bounds, found := tester.Find(label)
 		if !found || bounds.Y <= previous {
 			t.Fatalf("incorrect category order for %s", label)

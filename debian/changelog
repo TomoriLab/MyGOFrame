@@ -1,3 +1,12 @@
+mygoframe (0.2.0-2) unstable; urgency=medium
+
+  * Use capture terminology for capture actions and settings in English,
+    Korean, and Japanese.
+  * Fit translated capture actions to their native text width and refresh UI
+    documentation and checks.
+
+ -- zeroday0619 <zero@tomori.dev>  Wed, 11 Nov 2026 00:32:22 +0900
+
 mygoframe (0.2.0-1) unstable; urgency=medium
 
   * Add English, Korean, and Japanese localization with native app-language

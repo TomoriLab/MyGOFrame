@@ -303,7 +303,7 @@ func (application *applicationState) quickPresetBar(context *ui.Context, compact
 		padding = 8
 	}
 	stacked := width < 560
-	selectorWidth := min(float32(330), max(float32(176), width-2*padding-16-128-8-128))
+	selectorWidth := min(float32(330), max(float32(176), width-2*padding-16-128-8-captureActionWidth(context)))
 	if stacked {
 		selectorWidth = width - 2*padding
 	}
@@ -322,7 +322,9 @@ func (application *applicationState) quickPresetControls(context *ui.Context, se
 			selectedExists = true
 		}
 	}
-	groupWidth := selectorWidth + gap + 264
+	actionWidth := captureActionWidth(context)
+	actionsWidth := 128 + 8 + actionWidth
+	groupWidth := selectorWidth + gap + actionsWidth
 	if showLabel {
 		groupWidth += presetLabelWidth(context) + gap
 	}
@@ -345,7 +347,7 @@ func (application *applicationState) quickPresetControls(context *ui.Context, se
 				label = "Stop video"
 			}
 			buttonDisabled := disabled || (!application.running && (!selectedExists || application.status.Recording.Active()))
-			if ui.PrimaryButton(context.Key("quick-video-toggle"), text(context, label)).Size(128, 32).Label(text(context, "Preset video action")).Shrink(0).Disabled(buttonDisabled).Clicked() {
+			if ui.PrimaryButton(context.Key("quick-video-toggle"), text(context, label)).Size(actionWidth, 32).Label(text(context, "Preset video action")).Shrink(0).Disabled(buttonDisabled).Clicked() {
 				if application.running {
 					application.stopVideo()
 				} else {
@@ -356,7 +358,7 @@ func (application *applicationState) quickPresetControls(context *ui.Context, se
 		if stacked {
 			ui.Row(context).FillWidth().Height(32).Shrink(0).Gap(8).Justify(ui.End).Children(actions)
 		} else {
-			ui.Row(context).Width(264).Height(32).Shrink(0).Gap(8).Children(actions)
+			ui.Row(context).Width(actionsWidth).Height(32).Shrink(0).Gap(8).Children(actions)
 		}
 	})
 }

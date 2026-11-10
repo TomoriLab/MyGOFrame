@@ -28,6 +28,16 @@ func presetLabelWidth(context *ui.Context) float32 {
 	return max(40, width+2)
 }
 
+func captureActionWidth(context *ui.Context) float32 {
+	width := float32(128)
+	for _, label := range []string{"Start video", "Stop video"} {
+		textWidth, _ := context.MeasureText(0, ui.Span{Text: text(context, label), Size: context.Theme().FontSize})
+		// Native buttons reserve horizontal padding and may also draw a one-pixel border.
+		width = max(width, textWidth+context.Theme().Space(7)+2)
+	}
+	return width
+}
+
 // The native selector edits a display label while presets retain their canonical values.
 func localizedSelect(context *ui.Context, selected *string, options []string) ui.Element {
 	labels := make([]string, len(options))

@@ -138,7 +138,7 @@ func TestViewStartsWithAudioOffAndHandlesFullscreen(t *testing.T) {
 	application.selection.setModes(fixtureModes())
 	application.audioDevices.Sources = []session.AudioDevice{{ID: "capture.input", Name: "Capture audio"}}
 	tester := ui.NewTester(application.view, 1280, 800)
-	if application.audioSource != audioOff || !tester.HasText("Video") || !tester.HasText("Audio") {
+	if application.audioSource != audioOff || !tester.HasText("Capture") || !tester.HasText("Audio") {
 		t.Fatalf("incorrect initial controls: %v", tester.Texts())
 	}
 	if err := tester.Click("Fullscreen · F11"); err != nil {
@@ -157,7 +157,7 @@ func TestViewFormatSelectionUpdatesResolutionAndFrameRate(t *testing.T) {
 	application := newTestApplication()
 	application.selection.setModes(fixtureModes())
 	tester := ui.NewTester(application.view, 1280, 800)
-	if err := tester.Click("Video"); err != nil {
+	if err := tester.Click("Capture"); err != nil {
 		t.Fatal(err)
 	}
 	if err := tester.Click("NV12"); err != nil {

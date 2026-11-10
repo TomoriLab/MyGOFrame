@@ -27,7 +27,7 @@ func TestPreviewKeepsAllSourceCornersVisible(t *testing.T) {
 				t.Run(fmt.Sprintf("%dx%d_in_%dx%d_scale%g_fullscreen_%t", source[0], source[1], dimensions[0], dimensions[1], scenario.scale, fullscreen), func(t *testing.T) {
 					tester.SetScale(scenario.scale)
 					tester.SetSize(dimensions[0], dimensions[1])
-					viewport, found := tester.Find("Video viewport")
+					viewport, found := tester.Find("Capture viewport")
 					if !found || viewport.W <= 0 || viewport.H <= 0 || viewport.X < 0 || viewport.Y < 0 || viewport.X+viewport.W > float32(dimensions[0])+1 || viewport.Y+viewport.H > float32(dimensions[1])+1 {
 						t.Fatalf("video viewport exceeds window: %+v in %v", viewport, dimensions)
 					}
@@ -84,7 +84,7 @@ func TestLongStatusDoesNotConsumePreview(t *testing.T) {
 	application.bitmap = ui.NewBitmap(previewPattern(1920, 1080))
 	application.errorMessage = strings.Repeat("A disconnected capture device needs to be selected again. ", 12)
 	tester := ui.NewTester(application.view, 320, 240)
-	viewport, found := tester.Find("Video viewport")
+	viewport, found := tester.Find("Capture viewport")
 	if !found || viewport.W <= 0 || viewport.H < 80 || viewport.Y+viewport.H > 240 {
 		t.Fatalf("status consumed preview: %+v", viewport)
 	}

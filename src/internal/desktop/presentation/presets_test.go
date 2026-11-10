@@ -101,14 +101,14 @@ func TestQuickPresetControlsStayInsideWindowAndLockDuringRecording(t *testing.T)
 		application.presets = []session.CapturePreset{{Name: "Console one"}, {Name: "Console two"}}
 		application.selectedPreset = "Console one"
 		tester := ui.NewTester(application.view, size[0], size[1])
-		for _, label := range []string{"Quick capture controls", "Quick preset selection", "Start video"} {
+		for _, label := range []string{"Quick capture controls", "Quick preset selection", "Start capture"} {
 			bounds, found := tester.Find(label)
 			if !found || bounds.X < 0 || bounds.X+bounds.W > float32(size[0])+1 || bounds.Y < 0 || bounds.Y+bounds.H > float32(size[1])+1 {
 				t.Fatalf("%s exceeds quick controls at %v: %+v", label, size, bounds)
 			}
 		}
 		selector, _ := tester.Find("Quick preset selection")
-		start, _ := tester.Find("Preset video action")
+		start, _ := tester.Find("Preset capture action")
 		recording, _ := tester.Find("Recording action")
 		aligned := selector.Y == start.Y
 		if size[0] < 560 {
@@ -128,7 +128,7 @@ func TestQuickPresetControlsStayInsideWindowAndLockDuringRecording(t *testing.T)
 				t.Fatalf("quick controls do not follow content columns: preset=%+v settings=%+v start=%+v", selector, settings, start)
 			}
 		}
-		if err := tester.Click("Start video"); err != nil {
+		if err := tester.Click("Start capture"); err != nil {
 			t.Fatal("saved preset did not enable quick start:", err)
 		}
 		application.status.Recording = session.RecordingSnapshot{Phase: "recording"}
