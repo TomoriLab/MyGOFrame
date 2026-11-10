@@ -1,3 +1,15 @@
+mygoframe (0.1.2-1) unstable; urgency=medium
+
+  * Build the domain-organized Go, Swift, and Rust sources from src/.
+  * Include hardware recording, capture presets, and native app/license
+    dialogs.
+  * Preserve DMA-BUF preview cadence while recording and retain fenced leases.
+  * Update package metadata, documentation, media dependencies, and runtime
+    notices.
+  * Set the supported Rust compiler baseline to the verified 1.97.1 toolchain.
+
+ -- Euiseo Cha <escha@zeroday0619.dev>  Tue, 10 Nov 2026 21:59:18 +0900
+
 mygoframe (0.1.1-1) unstable; urgency=medium
 
   * Package the current Go UI, Swift session policies, and Rust media core.

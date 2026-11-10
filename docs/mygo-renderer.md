@@ -4,7 +4,7 @@ The application depends on the official `github.com/egoist/mygo v0.8.1` module. 
 
 `tools/prepare-mygo.py` applies the patch only inside the ignored build directory using Python 3 and GNU `patch`. It rejects another MyGo version or a module replacement. The checked-in `go.mod` and module cache remain unchanged. No dependency source tree is tracked in this repository or copied into `third_party/`.
 
-Development builds copy the official cached module to `build/mygo-source/` and generate `build/mygo.mod` with a replacement pointing to that temporary source. `tools/go-mygoframe.py` supplies this alternate module file to Go. Use `make`, `make test`, and `make test-race` to include the renderer extension when building or testing the application. Direct `go build ./cmd/mygoframe` does not select the patch.
+Development builds copy the official cached module to `build/mygo-source/` and generate `build/mygo.mod` with a replacement pointing to that temporary source. `tools/go-mygoframe.py` supplies this alternate module file to Go. Use `make`, `make test`, and `make test-race` to include the renderer extension when building or testing the application. Direct `go build ./src/cmd/mygoframe` does not select the patch.
 
 Debian source preparation vendors the official pinned dependencies. During its build, the helper copies only the affected vendor files to `build/mygo-overlay-source/` and generates `build/mygo-overlay.json`. Go receives this sparse source overlay and retains its normal vendor mode. The original vendor snapshot remains unchanged. Application build and test commands use the same wrapper in both environments.
 

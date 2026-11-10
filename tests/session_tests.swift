@@ -6,6 +6,7 @@ struct SessionTests {
     static func consumeHandle(_ handle: consuming NativeHandle) { _ = handle.pointer }
 
     static func main() throws {
+        try runPresetTests()
         var releases = 0
         let allocation = UnsafeMutableRawPointer.allocate(byteCount: 8, alignment: 8)
         let owner = NativeHandle(pointer: allocation) { pointer in

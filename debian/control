@@ -12,6 +12,8 @@ Build-Depends:
  extra-cmake-modules,
  golang-go (>= 2:1.27~),
  libavcodec-dev,
+ libavformat-dev,
+ libswresample-dev,
  libavutil-dev,
  libclang-dev,
  libegl1,
@@ -33,7 +35,7 @@ Build-Depends:
  pkgconf,
  python3 (>= 3.12),
  ripgrep,
- rustc (>= 1.85) | rustup,
+ rustc (>= 1.97.1) | rustup,
  swiftlang (>= 6.3.3) <!pkg.mygoframe.external-toolchains>,
  wayland-protocols (>= 1.32),
 Standards-Version: 4.7.4
@@ -58,8 +60,12 @@ Recommends:
  libvulkan1,
  pipewire,
  wireplumber,
-Description: low-latency capture-card viewer with audio monitoring
+Description: low-latency capture-card viewer and hardware recorder
  MyGOFrame displays a V4L2 capture device in a native MyGo window and
  monitors a selected PipeWire audio input through speakers or headphones.
  Video format, resolution, frame rate, and color range are selectable.
  A separate video-only window supports application sharing.
+ Hardware recording supports H.264, HEVC, and AV1 on compatible GPUs,
+ with independent capture-audio recording and speaker monitoring.
+ Named presets save capture and recording settings. Native dialogs show
+ application information and complete third-party license notices.

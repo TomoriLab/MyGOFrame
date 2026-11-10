@@ -21,7 +21,7 @@ override_dh_auto_configure:
 
 override_dh_auto_build:
 	$(MAKE) NATIVE_RUNTIME_FLAGS='--offline' CARGO_FLAGS='--offline --locked' GO_BUILD_FLAGS='-buildmode=pie -buildvcs=false' SWIFT_EXTRA_FLAGS='-static-stdlib -use-ld=lld -debug-prefix-map $(CURDIR)=. -Xlinker -z -Xlinker relro -Xlinker -z -Xlinker now'
-	go run ./tools/package-assets --output build/mygoframe.png
+	go run ./src/cmd/package-assets --output build/mygoframe.png
 
 override_dh_auto_test:
 ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))

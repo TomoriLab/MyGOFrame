@@ -1,6 +1,6 @@
-.TH MYGOFRAME 1 "2026-11-07" "MyGOFrame 0.1.0" "User Commands"
+.TH MYGOFRAME 1 "2026-11-10" "MyGOFrame 0.1.2" "User Commands"
 .SH NAME
-mygoframe \- view capture-card video and monitor capture-card audio
+mygoframe \- view and record capture-card video and audio
 .SH SYNOPSIS
 .B mygoframe
 .RI [ options ]
@@ -14,6 +14,17 @@ Audio monitoring is disabled until an input is selected.
 The preview preserves the captured video's aspect ratio.
 A separate capture window provides video-only content for application sharing.
 Press F11 to toggle fullscreen and Escape to leave fullscreen.
+.SH RECORDING AND PRESETS
+Recording controls select a compatible GPU, H.264, HEVC, or AV1 codec,
+bitrate, rate control, and MKV or MP4 output.
+Recording starts only when requested and does not replace the live preview.
+The capture-card audio input can be recorded while speaker monitoring is off
+or muted. Monitoring volume does not change recorded audio gain.
+.PP
+Named presets save video, audio, and recording settings.
+Select a saved preset in the command area to start video without opening settings.
+Applying a preset does not start recording.
+The app information dialog includes developer details and full component licenses.
 .SH OPTIONS
 .TP
 .B \-h, \-help
@@ -66,6 +77,18 @@ The default is 480.
 .BI \-fps " rate"
 Set the video check frame rate as a decimal or fraction, such as 60000/1001.
 The default is 60.
+.TP
+.BI \-video-backend " backend"
+Select auto, cpu, or dma video capture.
+The default is auto. DMA capture retains CPU fallback on unsupported GPU paths.
+.TP
+.BI \-color-range " range"
+Interpret input samples as auto, limited, or full range.
+The default is auto.
+.TP
+.B \-measure-latency
+Measure capture-to-GPU-texture readiness using native completion fences.
+This does not measure physical display or controller-to-display latency.
 .TP
 .BI \-seconds " duration"
 Set the duration of a video or audio check in seconds.
@@ -126,6 +149,14 @@ Open the graphical interface with a separate sharing window:
 mygoframe --capture-window
 .RE
 .fi
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/mygoframe/presets.json
+Named capture and recording presets. If XDG_CONFIG_HOME is not an absolute
+path, the configuration directory defaults to $HOME/.config.
+.TP
+.I $HOME/Videos/MyGOFrame/
+Default recording output directory when no output path is selected.
 .SH NOTES
 Video capture uses the V4L2 single-planar streaming interface.
 Supported formats are YUYV, UYVY, NV12, P010, BGR24, RGB24, and MJPEG.

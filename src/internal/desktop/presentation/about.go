@@ -1,0 +1,159 @@
+package presentation
+
+import (
+	"fmt"
+	"strings"
+
+	about "github.com/TomoriLab/MyGOFrame/src/internal/about/domain"
+
+	"github.com/egoist/mygo/ui"
+)
+
+func (application *applicationState) openAbout() {
+	application.aboutOpen = true
+	if application.aboutCatalog == nil {
+		application.aboutCatalog, application.aboutError = application.services.Notices()
+	}
+}
+
+func (application *applicationState) showComponentLicense(component about.Component) {
+	if application.aboutCatalog == nil {
+		return
+	}
+	application.licenseComponent = component
+	application.licenseBody = application.aboutCatalog.LicenseText(component)
+	application.licenseNeedsReset = true
+	application.licenseOpen = true
+}
+
+func modalSize(width, height, maximumWidth, maximumHeight float32) (float32, float32) {
+	return min(maximumWidth, max(1, width-24)), min(maximumHeight, max(1, height-24))
+}
+
+func (application *applicationState) aboutDialogs(context *ui.Context, width, height float32) {
+	palette := fluentAppearance(context.Theme().Dark)
+	ui.DialogBase(context.Key("about-modal"), &application.aboutOpen, func(backdrop, panel ui.Element) {
+		backdrop.Background(ui.RGBA(0, 0, 0, .5))
+		panelWidth, panelHeight := modalSize(width, height, 760, 720)
+		panel.Column().Size(panelWidth, panelHeight).Background(palette.card).Border(1, palette.stroke).Radius(12).Label("About dialog").Children(func() {
+			modalHeader(context, "About MyGOFrame", "Close app information", func() { application.aboutOpen = false })
+			ui.Scroll(context.Key("about-scroll")).FillWidth().Grow(1).MinHeight(0).Label("About information").Children(func() {
+				ui.Column(context).FillWidth().Padding(16).Gap(16).Children(func() { application.aboutContents(context) })
+			})
+		})
+	})
+	ui.DialogBase(context.Key("license-modal"), &application.licenseOpen, func(backdrop, panel ui.Element) {
+		backdrop.Background(ui.RGBA(0, 0, 0, .5))
+		panelWidth, panelHeight := modalSize(width, height, 860, 760)
+		panel.Column().Size(panelWidth, panelHeight).Background(palette.card).Border(1, palette.stroke).Radius(12).Label("License dialog").Children(func() {
+			modalHeader(context, application.licenseComponent.Name+" license", "Close license", func() { application.licenseOpen = false })
+			ui.Row(context).FillWidth().Shrink(0).Padding(0, 16, 8).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Text(context, application.licenseComponent.License).Grow(1).MinWidth(0).FontSize(12).SingleLine().Tooltip(application.licenseComponent.License).TextColor(palette.theme.TextMuted)
+				if application.licenseComponent.URL != "" {
+					ui.Link(context, "Upstream project", application.licenseComponent.URL).Shrink(0).FontSize(12).TextColor(aboutLinkColor(context.Theme().Dark))
+				}
+			})
+			ui.Column(context).FillWidth().Grow(1).MinHeight(0).Padding(0, 16).Children(func() {
+				reader := ui.TextArea(context.Key(application.licenseComponent.ID), &application.licenseBody).FillWidth().Grow(1).MinWidth(0).MinHeight(0).ReadOnly(true).Font("monospace").FontSize(12).Label("License text")
+				if application.licenseNeedsReset {
+					// A notice starts at its first line instead of the text editor's default end position.
+					reader.SetTextSelection(0, 0)
+					application.licenseNeedsReset = false
+				}
+			})
+			ui.Row(context).FillWidth().Shrink(0).Padding(8, 16).Justify(ui.End).Children(func() {
+				if ui.Button(context.Key("copy-license"), "Copy license text").Clicked() {
+					context.WriteClipboard(application.licenseBody)
+				}
+			})
+		})
+	})
+	if !application.aboutOpen {
+		application.licenseOpen = false
+	}
+}
+
+func aboutLinkColor(dark bool) ui.Color {
+	if dark {
+		return ui.Hex("#75b6f5")
+	}
+	return fluentLight.theme.Accent
+}
+
+func modalHeader(context *ui.Context, title, closeLabel string, closeAction func()) {
+	ui.Row(context).FillWidth().Shrink(0).Padding(12, 16).Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Text(context, title).Grow(1).MinWidth(0).FontSize(18).FontWeight(600).SingleLine()
+		if ui.Button(context.Key(closeLabel), "Close").Shrink(0).Label(closeLabel).Clicked() {
+			closeAction()
+		}
+	})
+}
+
+func (application *applicationState) aboutContents(context *ui.Context) {
+	if application.aboutError != nil {
+		ui.Text(context, application.aboutError.Error()).FillWidth().TextColor(context.Theme().Danger)
+		return
+	}
+	catalog := application.aboutCatalog
+	if catalog == nil {
+		return
+	}
+	ui.Row(context).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
+		ui.Image(context, applicationBranding().logo).Size(48, 48).Radius(10).Clip()
+		ui.Column(context).Grow(1).MinWidth(0).Gap(4).Children(func() {
+			ui.Text(context, "MyGOFrame").FontSize(22).FontWeight(600)
+			ui.Text(context, "Version "+catalog.Version).FillWidth().FontSize(13)
+			if catalog.Revision != "" {
+				revision := "Build " + catalog.Revision
+				if catalog.Modified {
+					revision += " (modified)"
+				}
+				helpText(context, revision)
+			}
+		})
+	})
+	helpText(context, "Low-latency capture-card video, audio monitoring, and recording.")
+	ui.Column(context).FillWidth().Gap(6).Children(func() {
+		ui.Text(context, "Developer").FontSize(16).FontWeight(600)
+		ui.Text(context, catalog.Developer+" / "+catalog.Organization).FillWidth().FontSize(14).Selectable()
+		ui.Link(context, catalog.Contact, "mailto:"+catalog.Contact).FontSize(13).TextColor(aboutLinkColor(context.Theme().Dark))
+		ui.Link(context, "Project and source code", catalog.ProjectURL).FontSize(13).TextColor(aboutLinkColor(context.Theme().Dark))
+	})
+	ui.Row(context).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Text(context, "Application license: MIT").Grow(1).MinWidth(0).FontSize(13)
+		if ui.Button(context.Key("application-license"), "View license").Label("View MyGOFrame license").Clicked() {
+			application.showComponentLicense(catalog.Components[0])
+		}
+	})
+	ui.Divider(context).FillWidth()
+	ui.Text(context, "Open source and runtime notices").FontSize(16).FontWeight(600)
+	helpText(context, fmt.Sprintf("%d components. Bundled and system-linked components retain their own terms.", len(catalog.Components)-1))
+	ui.TextInput(context.Key("license-search"), &application.licenseSearch).FillWidth().Placeholder("Search component or license").Label("Search licenses")
+	query := strings.ToLower(strings.TrimSpace(application.licenseSearch))
+	matches := 0
+	for _, component := range catalog.Components {
+		if component.ID == "mygoframe" {
+			continue
+		}
+		if query != "" && !strings.Contains(strings.ToLower(component.Name+" "+component.License+" "+component.Scope), query) {
+			continue
+		}
+		matches++
+		entry := component
+		button := ui.ButtonBase(context.Key(entry.ID)).FillWidth().MinWidth(0).Shrink(0).Padding(12).Background(context.Theme().SurfaceHover).Border(1, context.Theme().Border).Radius(6).Label("License for " + entry.Name)
+		if button.Clicked() {
+			application.showComponentLicense(entry)
+		}
+		button.Children(func() {
+			ui.Column(context).FillWidth().MinWidth(0).Gap(4).Children(func() {
+				ui.Text(context, entry.Name).FillWidth().MinWidth(0).FontSize(14).FontWeight(600)
+				helpText(context, entry.Version+" · "+entry.Scope)
+				helpText(context, entry.License)
+				ui.Text(context, "View license ›").FontSize(12).TextColor(aboutLinkColor(context.Theme().Dark))
+			})
+		})
+	}
+	if matches == 0 {
+		helpText(context, "No matching components.")
+	}
+}

@@ -59,7 +59,7 @@ class DeviceFormat(ctypes.Structure):
 
 def prepare_graphics_runtime(environment=None, directories=None, vendor_directories=None,
                              driver_version=None, library_directories=None):
-    """Mirror internal/graphicsruntime policy before loading a graphics driver."""
+    """Mirror src/internal/platform/infrastructure/graphics policy before loading a graphics driver."""
     environment = os.environ if environment is None else environment
     if driver_version is None:
         try:

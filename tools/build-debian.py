@@ -31,7 +31,8 @@ def main():
     build_directory = Path(tempfile.mkdtemp(prefix="mygoframe-build-"))
     source = build_directory / f"mygoframe-{upstream_version}"
     def ignored(directory, names):
-        excluded = {".git", "build", "work", "vendor", "target", "__pycache__"}
+        excluded = {".git", "build", "work", "vendor", "target", "__pycache__",
+                    "catalog_generated.go", "catalog_generated.go.new"}
         return [name for name in names if name in excluded or (Path(directory) / name).resolve() == output]
     shutil.copytree(root, source, ignore=ignored)
     environment = os.environ.copy()

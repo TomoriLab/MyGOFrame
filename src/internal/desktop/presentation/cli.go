@@ -1,0 +1,478 @@
+package presentation
+
+import (
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"math"
+	"math/big"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	video "github.com/TomoriLab/MyGOFrame/src/internal/capture/domain"
+	desktopapp "github.com/TomoriLab/MyGOFrame/src/internal/desktop/application"
+	sessionapp "github.com/TomoriLab/MyGOFrame/src/internal/session/application"
+	session "github.com/TomoriLab/MyGOFrame/src/internal/session/domain"
+
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
+)
+
+func Run(services desktopapp.Services, prepareDesktop func(bool) error) error {
+	list := flag.Bool("list", false, "List V4L2 video devices and PipeWire audio sources and outputs as JSON.")
+	probe := flag.String("probe", "", "List the supported video modes of a V4L2 device as JSON.")
+	video := flag.String("smoke-video", "", "Capture a V4L2 device without opening a window.")
+	uiVideo := flag.String("smoke-ui-video", "", "Display a V4L2 device in the native window; requires --smoke-ui-seconds.")
+	uiPattern := flag.Bool("smoke-ui-pattern", false, "Display a synthetic border and colored corners; requires --smoke-ui-seconds.")
+	captureWindow := flag.Bool("capture-window", false, "Open a separate native video-only window for application sharing.")
+	captureWindowCycles := flag.Int("smoke-capture-window-cycles", 0, "Close and reopen the capture window during a UI check; requires --capture-window and --smoke-ui-seconds.")
+	windowWidth := flag.Int("window-width", 1280, "Set the initial window content width in logical pixels.")
+	windowHeight := flag.Int("window-height", 800, "Set the initial window content height in logical pixels.")
+	audio := flag.String("smoke-audio", "", "Monitor a PipeWire source without opening a window.")
+	output := flag.String("output", "", "Select a PipeWire output node; an empty value uses the system default.")
+	format := flag.String("format", "NV12", "Select a four-character V4L2 pixel format for the video check.")
+	width := flag.Uint("width", 640, "Select the video check width in pixels.")
+	height := flag.Uint("height", 480, "Select the video check height in pixels.")
+	frameRate := flag.String("fps", "60", "Select frames per second, as a decimal or fraction such as 60000/1001.")
+	seconds := flag.Float64("seconds", 2, "Run a video or audio check for this many seconds.")
+	volume := flag.Float64("volume", 0, "Set audio check volume from 0 to 100; the default is silent.")
+	backend := flag.String("video-backend", "auto", "Select automatic DMA-BUF with CPU fallback, cpu, or dma capture.")
+	colorRange := flag.String("color-range", "auto", "Interpret input samples as auto, limited, or full range.")
+	measureLatency := flag.Bool("measure-latency", false, "Measure capture-to-GPU-texture readiness with native completion fences.")
+	uiSeconds := flag.Float64("smoke-ui-seconds", 0, "Close the native window after this many seconds for a UI check.")
+	flag.Parse()
+	if *backend != "auto" && *backend != "cpu" && *backend != "dma" {
+		return errors.New("--video-backend must be auto, cpu, or dma")
+	}
+	rangeValue := int32(0)
+	switch *colorRange {
+	case "auto":
+	case "limited":
+		rangeValue = 1
+	case "full":
+		rangeValue = 2
+	default:
+		return errors.New("--color-range must be auto, limited, or full")
+	}
+
+	if flag.NArg() != 0 {
+		return fmt.Errorf("unexpected positional arguments: %v", flag.Args())
+	}
+	modes := 0
+	for _, enabled := range []bool{*list, *probe != "", *video != "", *audio != "", *uiVideo != "", *uiPattern} {
+		if enabled {
+			modes++
+		}
+	}
+	if modes > 1 {
+		return errors.New("choose only one of --list, --probe, --smoke-video, --smoke-audio, --smoke-ui-video, or --smoke-ui-pattern")
+	}
+	if (*captureWindow || *captureWindowCycles != 0) && (*list || *probe != "" || *video != "" || *audio != "") {
+		return errors.New("capture window options require a graphical UI mode")
+	}
+	if *list {
+		return listDevices(services)
+	}
+	if *probe != "" {
+		modes, err := services.VideoModes(*probe)
+		if err != nil {
+			return err
+		}
+		return writeJSON(modes)
+	}
+	if *video != "" || *audio != "" {
+		if math.IsNaN(*seconds) || math.IsInf(*seconds, 0) || *seconds <= 0 || *seconds > 3600 {
+			return errors.New("--seconds must be greater than zero and no more than 3600")
+		}
+		if math.IsNaN(*volume) || math.IsInf(*volume, 0) || *volume < 0 || *volume > 100 {
+			return errors.New("--volume must be from 0 to 100")
+		}
+		engine, err := services.NewEngine()
+		if err != nil {
+			return err
+		}
+		defer engine.Close()
+		if *video != "" {
+			config, err := parseVideoConfig(*video, *format, *width, *height, *frameRate)
+			if err != nil {
+				return err
+			}
+			config.Backend, config.ColorRange = *backend, rangeValue
+			if err := engine.StartVideo(config); err != nil {
+				return err
+			}
+			defer engine.StopVideo()
+		} else {
+			engine.SetVolume(*volume / 100)
+			if err := engine.StartAudio(*audio, *output); err != nil {
+				return err
+			}
+			defer engine.StopAudio()
+		}
+		return smoke(engine, time.Duration(*seconds*float64(time.Second)), *video != "")
+	}
+	if math.IsNaN(*uiSeconds) || math.IsInf(*uiSeconds, 0) || *uiSeconds < 0 || *uiSeconds > 3600 {
+		return errors.New("--smoke-ui-seconds must be from 0 to 3600")
+	}
+	if *windowWidth < 320 || *windowWidth > 16384 || *windowHeight < 240 || *windowHeight > 16384 {
+		return errors.New("window width must be from 320 to 16384 and height from 240 to 16384")
+	}
+	if *uiPattern && (*uiSeconds <= 0 || *width == 0 || *height == 0 || *width > 8192 || *height > 8192) {
+		return errors.New("--smoke-ui-pattern requires a positive --smoke-ui-seconds and source dimensions from 1 to 8192")
+	}
+	if *captureWindowCycles < 0 || *captureWindowCycles > 16 || (*captureWindowCycles > 0 && (!*captureWindow || *uiSeconds < float64(*captureWindowCycles+1))) {
+		return errors.New("--smoke-capture-window-cycles must be from 0 to 16 and requires --capture-window with at least one UI second per cycle plus one")
+	}
+	var uiConfig *session.VideoConfig
+	if *uiVideo != "" {
+		if *uiSeconds <= 0 {
+			return errors.New("--smoke-ui-video requires a positive --smoke-ui-seconds")
+		}
+		config, err := parseVideoConfig(*uiVideo, *format, *width, *height, *frameRate)
+		if err != nil {
+			return err
+		}
+		config.Backend, config.ColorRange = *backend, rangeValue
+		uiConfig = &config
+	}
+	services.MeasureLatency = services.MeasureLatency || *measureLatency
+	if err := prepareDesktop(*measureLatency); err != nil {
+		return err
+	}
+
+	return runWindow(services, time.Duration(*uiSeconds*float64(time.Second)), uiConfig, windowConfiguration{
+		width: *windowWidth, height: *windowHeight, pattern: *uiPattern, patternWidth: int(*width), patternHeight: int(*height),
+		captureWindow: *captureWindow, captureWindowCycles: *captureWindowCycles,
+		videoBackend: *backend,
+	})
+}
+
+func parseVideoConfig(path, format string, width, height uint, frameRate string) (session.VideoConfig, error) {
+	if width == 0 || height == 0 || width > 16384 || height > 16384 {
+		return session.VideoConfig{}, errors.New("video dimensions must be from 1 to 16384")
+	}
+	fourcc, err := video.FourCC(format)
+	if err != nil {
+		return session.VideoConfig{}, err
+	}
+	numerator, denominator, err := parseFrameRate(frameRate)
+	if err != nil {
+		return session.VideoConfig{}, err
+	}
+	return session.VideoConfig{Path: path, Mode: session.VideoMode{FourCC: fourcc, Format: format, Width: uint32(width), Height: uint32(height), IntervalNumerator: numerator, IntervalDenominator: denominator}}, nil
+}
+
+func parseFrameRate(value string) (uint32, uint32, error) {
+	rate, ok := new(big.Rat).SetString(value)
+	if !ok || rate.Sign() <= 0 || !rate.Num().IsUint64() || !rate.Denom().IsUint64() || rate.Num().Uint64() > math.MaxUint32 || rate.Denom().Uint64() > math.MaxUint32 {
+		return 0, 0, errors.New("--fps must be a positive decimal or fraction representable by 32-bit integers")
+	}
+	return uint32(rate.Denom().Uint64()), uint32(rate.Num().Uint64()), nil
+}
+
+func writeJSON(value any) error {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(value)
+}
+
+func listDevices(services desktopapp.Services) error {
+	video, videoError := services.VideoDevices()
+	audio, audioError := services.AudioDevices()
+	result := map[string]any{"video": video, "audio": audio}
+	if err := errors.Join(videoError, audioError); err != nil {
+		result["error"] = err.Error()
+	}
+	if err := writeJSON(result); err != nil {
+		return err
+	}
+	return errors.Join(videoError, audioError)
+}
+
+func smoke(engine sessionapp.Engine, duration time.Duration, video bool) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	ticker := time.NewTicker(2 * time.Millisecond)
+	defer ticker.Stop()
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(interrupt)
+	var sequence, acquired uint64
+	running := true
+	for running {
+		select {
+		case <-timer.C:
+			running = false
+		case <-interrupt:
+			running = false
+		case <-ticker.C:
+			if video {
+				frame, err := engine.AcquireFrame(sequence)
+				if err != nil {
+					return err
+				}
+				if frame != nil {
+					sequence = frame.SequenceNumber()
+					acquired++
+					frame.Release()
+				}
+			}
+		}
+	}
+	status, err := engine.Status()
+	if err != nil {
+		return err
+	}
+	status["acquiredFrames"] = acquired
+	if err := writeJSON(status); err != nil {
+		return err
+	}
+	return validateSmokeStatus(status, acquired, video)
+}
+
+func validateSmokeStatus(status map[string]any, acquired uint64, video bool) error {
+	if message, _ := status["error"].(string); message != "" {
+		return errors.New(message)
+	}
+	if video {
+		if acquired == 0 {
+			return errors.New("video check completed without receiving a frame")
+		}
+		if running, _ := status["videoRunning"].(bool); !running {
+			return errors.New("video capture stopped before the check completed")
+		}
+		return nil
+	}
+	audio, ok := status["audio"].(map[string]any)
+	if !ok {
+		return errors.New("audio check returned no stream status")
+	}
+	if message, _ := audio["error"].(string); message != "" {
+		return errors.New(message)
+	}
+	if running, _ := audio["running"].(bool); !running {
+		return errors.New("audio streams are not running")
+	}
+	captured, _ := audio["capturedFrames"].(float64)
+	played, _ := audio["playedFrames"].(float64)
+	if captured <= 0 || played <= 0 {
+		return errors.New("audio check completed without captured and played frames")
+	}
+	return nil
+}
+
+func validatePreview(application *applicationState) error {
+	if application.errorMessage != "" {
+		return errors.New(application.errorMessage)
+	}
+	if !application.running {
+		return errors.New("UI video capture is not running")
+	}
+	if application.displayedFrame == nil || application.bitmap == nil {
+		return errors.New("UI check completed without displaying a video frame")
+	}
+	if application.status.Error != "" {
+		return errors.New(application.status.Error)
+	}
+	if !application.status.VideoRunning {
+		return errors.New("capture is not running")
+	}
+	return nil
+}
+
+type windowConfiguration struct {
+	width, height               int
+	pattern                     bool
+	patternWidth, patternHeight int
+	captureWindow               bool
+	captureWindowCycles         int
+	videoBackend                string
+}
+
+func smokeWindowState(window *mygo.Window, role string) map[string]any {
+	bounds := func(rectangle mygo.Rectangle) map[string]int {
+		return map[string]int{"x": rectangle.X, "y": rectangle.Y, "width": rectangle.Width, "height": rectangle.Height}
+	}
+	return map[string]any{
+		"role": role, "contextID": window.GPUContextID(),
+		"bounds": bounds(window.Bounds()), "contentBounds": bounds(window.ContentBounds()),
+		"visible": window.IsVisible(), "focused": window.IsFocused(),
+		"minimized": window.IsMinimized(), "fullscreen": window.IsFullScreen(),
+	}
+}
+
+func runWindow(services desktopapp.Services, closeAfter time.Duration, videoConfig *session.VideoConfig, config windowConfiguration) (result error) {
+	engine, err := services.NewEngine()
+	if err != nil {
+		return err
+	}
+	defer engine.Close()
+	application := newApplication(services)
+	application.loadPresets()
+	if config.videoBackend != "" {
+		application.videoBackend = config.videoBackend
+	}
+	var previewError error
+	var initializationError error
+	var previewStatus map[string]any
+	var windowObservations []map[string]any
+	windowObservationIndex := make(map[*mygo.Window]int)
+	contextRoles := make(map[string]string)
+	recordWindow := func(window *mygo.Window, role string) {
+		observation := smokeWindowState(window, role)
+		if index, exists := windowObservationIndex[window]; exists {
+			windowObservations[index] = observation
+		} else {
+			windowObservationIndex[window] = len(windowObservations)
+			windowObservations = append(windowObservations, observation)
+		}
+		if identifier := observation["contextID"].(uint64); identifier != 0 {
+			contextRoles[fmt.Sprint(identifier)] = role
+		}
+	}
+	observeCaptureWindow := func() {
+		if closeAfter > 0 && application.presentation != nil {
+			window := application.presentation.window
+			window.OnClose(func(*mygo.CloseEvent) { recordWindow(window, "capture") })
+		}
+	}
+	captureWindowCheck := config.captureWindow && closeAfter > 0
+	if captureWindowCheck {
+		previewError = errors.New("capture window check did not complete")
+	}
+	if videoConfig != nil {
+		application.videoBackend = videoConfig.Backend
+		if videoConfig.ColorRange == 1 {
+			application.colorRange = "Limited"
+		} else if videoConfig.ColorRange == 2 {
+			application.colorRange = "Full"
+		}
+		device := session.VideoDevice{Path: videoConfig.Path, Name: "Video smoke test"}
+		application.devices = []session.VideoDevice{device}
+		application.device = videoLabel(device)
+		application.selection.setModes([]session.VideoMode{videoConfig.Mode})
+		previewError = errors.New("UI preview check did not complete")
+	}
+	if config.pattern {
+		application.bitmap = ui.NewBitmap(previewPattern(config.patternWidth, config.patternHeight))
+	}
+	mygo.App.WhenReady(func() {
+		window := mygo.NewWindow(mygo.WindowOptions{Title: "MyGOFrame", Width: config.width, Height: config.height, UseContentSize: true, MinWidth: 320, MinHeight: 240, Content: ui.View(application.view)})
+		application.window = window
+		application.refreshRecordingDevices()
+		application.applyWindowIcon(window)
+		if !config.pattern {
+			application.worker, initializationError = newWorker(engine, window, application)
+			if initializationError != nil {
+				application.errorMessage = initializationError.Error()
+			}
+		}
+		var cycleTimers []*time.Timer
+		if closeAfter > 0 {
+			window.OnClose(func(*mygo.CloseEvent) { recordWindow(window, "main") })
+		}
+		window.OnClosed(func() {
+			for _, timer := range cycleTimers {
+				timer.Stop()
+			}
+			previewError = nil
+			if videoConfig != nil {
+				currentStatus, statusError := engine.Snapshot()
+				if statusError != nil {
+					previewError = statusError
+				} else {
+					application.status = currentStatus
+					previewError = validatePreview(application)
+				}
+				previewStatus = application.status.JSONMap()
+				if previewStatus == nil {
+					previewStatus = make(map[string]any)
+				}
+				if application.displayedFrame != nil {
+					previewStatus["displayedFrameSequence"] = application.displayedFrame.SequenceNumber()
+				}
+				previewStatus["gpuRenderMetrics"] = application.gpuRenderMetrics()
+				if os.Getenv("MYGOFRAME_MEASURE_LATENCY") == "1" {
+					timings, timingError := services.GPUTimings()
+					if timingError != nil {
+						previewError = errors.Join(previewError, timingError)
+					} else {
+						previewStatus["gpuTimings"] = timings
+					}
+				}
+			}
+			if captureWindowCheck {
+				if previewStatus == nil {
+					previewStatus = make(map[string]any)
+				}
+				presentation := application.presentation
+				if presentation == nil {
+					previewError = errors.Join(previewError, errors.New("capture window closed before the UI check completed"))
+				} else {
+					previewStatus["captureWindowDisplayedSequence"] = presentation.displayedSequence
+					previewStatus["captureWindowRenderCount"] = presentation.renderCount
+					previewStatus["captureWindowDisplayedBitmap"] = presentation.displayedBitmap
+					if presentation.renderCount == 0 {
+						previewError = errors.Join(previewError, errors.New("capture window check completed without rendering"))
+					} else if ((config.pattern || videoConfig != nil) && !presentation.displayedBitmap) || (videoConfig != nil && presentation.displayedSequence == 0) {
+						previewError = errors.Join(previewError, errors.New("capture window check completed without displaying its video"))
+					}
+				}
+			}
+			application.close()
+			mygo.App.Quit()
+		})
+		window.OnEnterFullScreen(func() { application.fullscreen = true; window.Invalidate() })
+		window.OnLeaveFullScreen(func() { application.fullscreen = false; window.Invalidate() })
+		if config.captureWindow {
+			application.openPresentation()
+			observeCaptureWindow()
+		}
+		for index := 1; index <= config.captureWindowCycles; index++ {
+			delay := closeAfter * time.Duration(index) / time.Duration(config.captureWindowCycles+1)
+			cycleTimers = append(cycleTimers, time.AfterFunc(delay, func() {
+				window.Update(func() {
+					if !application.closing {
+						application.closePresentation()
+						application.openPresentation()
+						observeCaptureWindow()
+					}
+				})
+			}))
+		}
+		if videoConfig != nil {
+			application.startVideo()
+		} else if !config.pattern {
+			application.refresh()
+		}
+		if closeAfter > 0 {
+			time.AfterFunc(closeAfter, window.Close)
+		}
+	})
+	defer func() {
+		application.close()
+		ui.ShutdownText()
+		result = errors.Join(result, mygo.App.ShutdownNative())
+	}()
+	if err := mygo.App.Run(); err != nil {
+		return err
+	}
+	if initializationError != nil {
+		return initializationError
+	}
+	if previewError != nil {
+		return previewError
+	}
+	if videoConfig != nil || captureWindowCheck {
+		if previewStatus == nil {
+			previewStatus = make(map[string]any)
+		}
+		previewStatus["gpuContextRoles"] = contextRoles
+		previewStatus["windowObservations"] = windowObservations
+		return writeJSON(previewStatus)
+	}
+	return nil
+}

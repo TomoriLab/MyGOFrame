@@ -2,6 +2,8 @@
 
 Go owns the MyGo native interface and renderer integration. Swift owns application policy and session control. Rust owns capture, conversion, playback, native storage, and GPU completion. Native UI composition and both top-level windows remain in MyGo.
 
+Production sources are under `src/` and grouped by domain within each toolchain. The [dependency rules](architecture.md#dependency-rules) define inward dependencies, injected ports, and bootstrap composition.
+
 ## Control and presentation
 
 | Layer | Responsibilities | Owned resources |

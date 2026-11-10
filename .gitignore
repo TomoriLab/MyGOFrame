@@ -1,6 +1,6 @@
 /build/
 /native-inputs/
-/core/rust/target/
+/src/rust/target/
 /work/
 *.core
 core.*
@@ -13,3 +13,6 @@ __pycache__/
 /debian/go-static-built-using
 /debian/*.debhelper.log
 /debian/*.substvars
+
+/src/internal/about/infrastructure/notices/catalog_generated.go
+/src/internal/about/infrastructure/notices/catalog_generated.go.new

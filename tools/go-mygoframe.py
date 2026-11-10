@@ -14,4 +14,9 @@ go = os.environ.get("GO", "go")
 if len(sys.argv) < 2:
     raise SystemExit("A Go subcommand is required.")
 flags = module.prepare(go)
+about_source = Path(__file__).resolve().parent / "prepare-about.py"
+about_specification = importlib.util.spec_from_file_location("mygoframe_about_build", about_source)
+about_module = importlib.util.module_from_spec(about_specification)
+about_specification.loader.exec_module(about_module)
+about_module.prepare(go, flags)
 os.execvp(go, [go, sys.argv[1], *flags, *sys.argv[2:]])

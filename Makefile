@@ -16,17 +16,19 @@ AUDIO_SOURCE ?=
 export AUDIO_SOURCE
 AUDIO_OUTPUT ?=
 export AUDIO_OUTPUT
-PACKAGES := libpipewire-0.3 libavcodec libavutil libswscale
+PACKAGES := libpipewire-0.3 libavcodec libavutil libswscale libavformat libswresample
 NATIVE_LIBS := $(shell pkg-config --libs $(PACKAGES)) -lpthread -lm
-SWIFT_IMPORT_FLAGS := -I core/include $(foreach option,$(shell pkg-config --cflags $(PACKAGES)),-Xcc $(option))
+SWIFT_IMPORT_FLAGS := -I src/abi $(foreach option,$(shell pkg-config --cflags $(PACKAGES)),-Xcc $(option))
 SWIFT_FLAGS := -swift-version 6 -O -g $(SWIFT_IMPORT_FLAGS)
-SWIFT_SOURCES := $(wildcard core/swift/*.swift)
+SWIFT_SOURCES := $(shell rg --files src/swift -g '*.swift' | sort)
+SWIFT_POLICY_SOURCES := $(shell rg --files src/swift -g '*.swift' | rg '/(domain|application)/' | sort)
+SESSION_TEST_SOURCES := tests/session_tests.swift tests/preset_tests.swift
 CORE_TEST_SOURCES := tests/legacy/swift/Audio.swift tests/legacy/swift/AudioRing.swift tests/legacy/swift/FramePool.swift tests/legacy/swift/PixelConverter.swift tests/legacy/swift/Video.swift
-RUST_SOURCES := $(shell rg --files core/rust -g '*.rs' -g 'Cargo.toml')
+RUST_SOURCES := $(shell rg --files src/rust -g '*.rs' -g 'Cargo.toml')
 RUST_ASAN := RUSTC_BOOTSTRAP=1 RUSTFLAGS='-Zsanitizer=address -C link-arg=-fuse-ld=lld' CARGO_TARGET_DIR='$(CURDIR)/build/rust-asan-target' ASAN_OPTIONS='detect_leaks=1:halt_on_error=1:abort_on_error=1' LSAN_OPTIONS='exitcode=23:report_objects=1'
-HEADERS := $(wildcard core/include/*)
+HEADERS := $(wildcard src/abi/*)
 
-.PHONY: all core native-runtime native-inputs run deb install-desktop test test-race test-mygo-ownership test-mygo-ownership-race test-sanitize test-thread-sanitize test-audio-integration test-egl-integration test-font-integration check-dependencies clean
+.PHONY: all core native-runtime native-inputs run deb install-desktop test test-architecture test-race test-mygo-ownership test-mygo-ownership-race test-sanitize test-thread-sanitize test-audio-integration test-egl-integration test-font-integration check-dependencies clean
 all: build/mygoframe
 core: build/libmygoframe_core.so
 
@@ -48,14 +50,18 @@ build:
 	mkdir -p build
 
 build/libmygoframe_media.so: $(RUST_SOURCES) $(HEADERS) Makefile | build
-	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" $(CARGO) build --manifest-path core/rust/Cargo.toml --release $(CARGO_FLAGS)
-	cp "$(RUST_TARGET_DIR)/release/libmygoframe_media.so" $@
+	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" $(CARGO) build --manifest-path src/rust/Cargo.toml --release $(CARGO_FLAGS)
+	cp "$(RUST_TARGET_DIR)/release/libmygoframe_media.so" $@.new
+	mv -f $@.new $@
 
 build/libmygoframe_core.so: build/libmygoframe_media.so $(SWIFT_SOURCES) $(HEADERS) Makefile | build
-	"$(SWIFTC)" $(SWIFT_FLAGS) $(SWIFT_EXTRA_FLAGS) -emit-library -module-name MyGOFrameCore $(SWIFT_SOURCES) -L build -lmygoframe_media -Xlinker -rpath -Xlinker '$$ORIGIN' -o $@
+	"$(SWIFTC)" $(SWIFT_FLAGS) $(SWIFT_EXTRA_FLAGS) -emit-library -module-name MyGOFrameCore $(SWIFT_SOURCES) -L build -lmygoframe_media -Xlinker -rpath -Xlinker '$$ORIGIN' -o $@.new
+	mv -f $@.new $@
 
-build/mygoframe: build/libmygoframe_core.so $(shell rg --files cmd internal -g '*.go' -g '*.png') tools/prepare-mygo.py tools/go-mygoframe.py $(wildcard patches/mygo/*.patch) go.mod go.sum | native-runtime
-	CGO_ENABLED=1 $(MYGO_GO) build -trimpath $(GO_BUILD_FLAGS) -o $@ ./cmd/mygoframe
+ABOUT_INPUTS := tools/prepare-about.py LICENSE debian/changelog native/runtime-lock.json $(shell rg --files native/notices debian/runtime-notices)
+
+build/mygoframe: build/libmygoframe_core.so $(shell rg --files src/cmd src/internal -g '*.go' -g '*.png') tools/prepare-mygo.py tools/go-mygoframe.py $(ABOUT_INPUTS) $(wildcard patches/mygo/*.patch) go.mod go.sum | native-runtime
+	CGO_ENABLED=1 $(MYGO_GO) build -trimpath $(GO_BUILD_FLAGS) -o $@ ./src/cmd/mygoframe
 
 run: all
 	./build/mygoframe
@@ -64,7 +70,7 @@ deb:
 	python3 tools/build-debian.py
 
 install-desktop: all
-	$(GO) run ./tools/install-desktop
+	$(GO) run ./src/cmd/install-desktop
 
 build/pool-tests: tests/legacy/swift/FramePool.swift tests/pool_tests.swift | build
 	"$(SWIFTC)" -swift-version 6 -O -g $^ -o $@
@@ -75,13 +81,21 @@ build/video-tests: $(CORE_TEST_SOURCES) tests/video_tests.swift $(HEADERS) Makef
 build/audio-tests: $(CORE_TEST_SOURCES) tests/audio_tests.swift $(HEADERS) Makefile | build
 	"$(SWIFTC)" $(SWIFT_FLAGS) $(CORE_TEST_SOURCES) tests/audio_tests.swift $(NATIVE_LIBS) -o $@
 
-build/session-tests: $(SWIFT_SOURCES) tests/session_tests.swift build/libmygoframe_media.so $(HEADERS) Makefile | build
-	"$(SWIFTC)" $(SWIFT_FLAGS) $(SWIFT_SOURCES) tests/session_tests.swift -L build -lmygoframe_media -Xlinker -rpath -Xlinker '$$ORIGIN' -o $@
+build/session-tests: $(SWIFT_SOURCES) $(SESSION_TEST_SOURCES) build/libmygoframe_media.so $(HEADERS) Makefile | build
+	"$(SWIFTC)" $(SWIFT_FLAGS) $(SWIFT_SOURCES) $(SESSION_TEST_SOURCES) -L build -lmygoframe_media -Xlinker -rpath -Xlinker '$$ORIGIN' -o $@
 
-test: all build/pool-tests build/video-tests build/audio-tests build/session-tests test-mygo-ownership
+build/policy-tests: $(SWIFT_POLICY_SOURCES) tests/policy_tests.swift | build
+	"$(SWIFTC)" -swift-version 6 -O -g $(SWIFT_POLICY_SOURCES) tests/policy_tests.swift -o $@
+
+test-architecture: build/policy-tests
+	python3 tools/check-architecture.py
+	./build/policy-tests
+	CGO_ENABLED=0 $(GO) test ./src/internal/about/domain ./src/internal/audio/domain ./src/internal/capture/domain ./src/internal/desktop/domain/... ./src/internal/presets/domain ./src/internal/recording/domain ./src/internal/session/domain
+
+test: all build/pool-tests build/video-tests build/audio-tests build/session-tests test-mygo-ownership test-architecture
 	./build/session-tests
 	python3 -m unittest discover -s tests -p 'test_*.py'
-	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" $(CARGO) test --manifest-path core/rust/Cargo.toml
+	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" $(CARGO) test --manifest-path src/rust/Cargo.toml
 	./build/pool-tests
 	./build/video-tests
 	./build/audio-tests
@@ -107,17 +121,17 @@ build/video-sanitize: $(CORE_TEST_SOURCES) tests/video_tests.swift $(HEADERS) Ma
 build/audio-sanitize: $(CORE_TEST_SOURCES) tests/audio_tests.swift $(HEADERS) Makefile | build
 	"$(SWIFTC)" $(SWIFT_FLAGS) -sanitize=address $(CORE_TEST_SOURCES) tests/audio_tests.swift $(NATIVE_LIBS) -o build/audio-sanitize
 
-build/session-sanitize: $(SWIFT_SOURCES) tests/session_tests.swift build/libmygoframe_media.so $(HEADERS) Makefile | build
-	"$(SWIFTC)" $(SWIFT_FLAGS) -sanitize=address $(SWIFT_SOURCES) tests/session_tests.swift -L build -lmygoframe_media -Xlinker -rpath -Xlinker '$$ORIGIN' -o $@
+build/session-sanitize: $(SWIFT_SOURCES) $(SESSION_TEST_SOURCES) build/libmygoframe_media.so $(HEADERS) Makefile | build
+	"$(SWIFTC)" $(SWIFT_FLAGS) -sanitize=address $(SWIFT_SOURCES) $(SESSION_TEST_SOURCES) -L build -lmygoframe_media -Xlinker -rpath -Xlinker '$$ORIGIN' -o $@
 
-build/session-thread-sanitize: $(SWIFT_SOURCES) tests/session_tests.swift build/libmygoframe_media.so $(HEADERS) Makefile | build
-	"$(SWIFTC)" $(SWIFT_FLAGS) -sanitize=thread $(SWIFT_SOURCES) tests/session_tests.swift -L build -lmygoframe_media -Xlinker -rpath -Xlinker '$$ORIGIN' -o $@
+build/session-thread-sanitize: $(SWIFT_SOURCES) $(SESSION_TEST_SOURCES) build/libmygoframe_media.so $(HEADERS) Makefile | build
+	"$(SWIFTC)" $(SWIFT_FLAGS) -sanitize=thread $(SWIFT_SOURCES) $(SESSION_TEST_SOURCES) -L build -lmygoframe_media -Xlinker -rpath -Xlinker '$$ORIGIN' -o $@
 
 test-sanitize: build/video-sanitize build/audio-sanitize build/session-sanitize
 	ASAN_OPTIONS='detect_leaks=1:halt_on_error=1' LSAN_OPTIONS='exitcode=23:report_objects=1' ./build/session-sanitize
 	./build/video-sanitize
 	./build/audio-sanitize
-	$(RUST_ASAN) $(CARGO) test --manifest-path core/rust/Cargo.toml --offline --lib
+	$(RUST_ASAN) $(CARGO) test --manifest-path src/rust/Cargo.toml --offline --lib
 
 test-egl-integration:
 	python3 tools/validate-egl-lifecycle.py --output build/egl-lifecycle.json
@@ -128,7 +142,7 @@ test-font-integration:
 test-audio-integration: build/audio-sanitize
 	./build/audio-sanitize --integration
 	@if [[ -n "$(AUDIO_SOURCE)" ]]; then \
-		$(RUST_ASAN) $(CARGO) test --manifest-path core/rust/Cargo.toml --offline --lib audio::tests::pipewire_real_device_lifecycle -- --ignored --exact --nocapture --test-threads=1; \
+		$(RUST_ASAN) $(CARGO) test --manifest-path src/rust/Cargo.toml --offline --lib audio::infrastructure::pipewire::tests::pipewire_real_device_lifecycle -- --ignored --exact --nocapture --test-threads=1; \
 	else \
 		echo 'Rust audio hardware test skipped: set AUDIO_SOURCE to run it.'; \
 	fi

@@ -1,10 +1,10 @@
 # Debian packaging
 
-The package installs MyGOFrame, its private Swift and Rust libraries, a desktop launcher, the rounded icon, AppStream metadata, and a manual page. The initial target is Debian sid on amd64. Runtime dependencies follow the FFmpeg and glibc ABI of the build host; the resulting binary is not intended for Debian stable.
+The package installs MyGOFrame with hardware recording, named capture presets, native application/license dialogs, its private Swift and Rust libraries, a desktop launcher, the rounded icon, AppStream metadata, and a manual page. Production sources live under `src/`; Go owns native presentation, Swift owns session policy, and Rust owns media buffers and codecs. The initial target is Debian sid on amd64. Runtime dependencies follow the FFmpeg and glibc ABI of the build host; the resulting binary is not intended for Debian stable.
 
 ## Build
 
-Install the dependencies listed in `debian/control`. Provision the official Swift 6.3.3 Linux toolchain separately. The version is pinned because the package includes matching Swift, Foundation, dispatch, and ICU license notices. Debian's `swift` package provides OpenStack storage and is unrelated to the compiler. Rust 2024 support and Go 1.27.3 or newer are also required.
+Install the dependencies listed in `debian/control`. Provision the official Swift 6.3.3 Linux toolchain separately. The version is pinned because the package includes matching Swift, Foundation, dispatch, and ICU license notices. Debian's `swift` package provides OpenStack storage and is unrelated to the compiler. Rust 1.97.1 or newer with Rust 2024 support and Go 1.27.3 or newer are also required.
 
 Python 3 and GNU `patch` prepare the MyGo renderer changes during the build. Meson, Ninja, CMake, ECM, and matching GTK development files build the [application-private native runtime](native-runtime-build.md). These build tools do not become application runtime dependencies.
 
@@ -14,6 +14,8 @@ make deb
 ```
 
 `go mod download` prepares the pinned dependency cache and may access the network. `make deb` copies the source into an isolated temporary tree, vendors the cached modules, and builds without network module or Cargo access. The checkout's normal build is preserved. Artifacts are written to `build/debian/`: the application and debug-symbol packages, the `.dsc`, orig tarball, Debian source tarball, build information, and changes file. The artifacts are unsigned.
+
+The package retains Swift, Go, Rust standard-library, and Go-module notices under `/usr/share/doc/mygoframe/third-party/`. The application also embeds full component notices for its native license dialogs.
 
 The source package contains the official MyGo v0.8.1 vendor snapshot, the [minimal renderer patch](mygo-renderer.md), and pinned upstream GTK, Fcitx, and KDE GTK-module source archives for offline rebuilding. During compilation, `tools/prepare-mygo.py` applies the MyGo patch to copies under `build/mygo-overlay-source/`. A generated Go overlay selects these files without modifying `vendor/` or the checked-in `go.mod`. Native dependency source trees are extracted under `build/`. Cleaning and rebuilding regenerates both sets of changes from pinned inputs.
 
@@ -28,7 +30,7 @@ The helper enables `pkg.mygoframe.external-toolchains` to use the externally pro
 ## Install
 
 ```sh
-sudo apt install ./build/debian/mygoframe_0.1.1-1_amd64.deb
+sudo apt install ./build/debian/mygoframe_0.1.2-1_amd64.deb
 mygoframe
 ```
 
@@ -43,9 +45,9 @@ The package uses the session's existing V4L2 and PipeWire permissions. It does n
 See `debian/README.source` for rebuilding the `.dsc` source package. The source includes the pinned Go vendor snapshot and runtime license notices. The package build runs the standard software tests unless `DEB_BUILD_OPTIONS=nocheck` is set. Hardware and sanitizer checks remain explicit commands in [Verification](verification.md).
 
 ```sh
-lintian build/debian/mygoframe_0.1.1-1_amd64.changes
-apt-get -s install ./build/debian/mygoframe_0.1.1-1_amd64.deb
-dpkg-deb -I build/debian/mygoframe_0.1.1-1_amd64.deb
+lintian build/debian/mygoframe_0.1.2-1_amd64.changes
+apt-get -s install ./build/debian/mygoframe_0.1.2-1_amd64.deb
+dpkg-deb -I build/debian/mygoframe_0.1.2-1_amd64.deb
 ```
 
 The loader paths use executable-relative private directories. Package validation should extract and execute the `.deb` with `LD_LIBRARY_PATH` unset, check that all ELF dependencies resolve, and exercise the native window and capture window. The [Debian shared-library policy](https://www.debian.org/doc/debian-policy/ch-sharedlibs.html) distinguishes these private libraries from a public library ABI.

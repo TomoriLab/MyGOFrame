@@ -27,21 +27,26 @@ installed Swift 6.3.3 compiler. Debian's `swift` package is OpenStack storage
 and is unrelated. Install the official Swift Linux toolchain and set SWIFTC
 if it is not on PATH or installed through Swiftly. The toolchain version is
 pinned to match the included Swift and ICU runtime notices. The package does not
-require the compiler or a Swift installation at runtime. Rust 2024 support
+require the compiler or a Swift installation at runtime. Rust 1.97.1 or newer with Rust 2024 support
 is required; Debian rustc/cargo or an installed rustup toolchain can be used.
 
 To rebuild the prepared source package:
 
-  dpkg-source -x mygoframe_0.1.1-1.dsc
-  cd mygoframe-0.1.1
+  dpkg-source -x mygoframe_0.1.2-1.dsc
+  cd mygoframe-0.1.2
   DEB_BUILD_PROFILES=pkg.mygoframe.external-toolchains dpkg-buildpackage -b -us -uc
+
+Production sources use the domain-based layout under src/: src/internal/ for
+Go, src/swift/ for session policies, src/rust/ for the media core, and src/abi/
+for native declarations. Generated embedded notices are rebuilt from inputs
+and removed by the clean target.
 
 The Go executable and Swift facade are built with hardening flags. Swift
 standard and Foundation libraries are linked statically into the private
 facade. FFmpeg, PipeWire, and graphics libraries remain system runtime
 dependencies. The system GTK package remains the verified version/ABI
-baseline and supplies its data/modules. The package includes Swift, Foundation, ICU, Go, and vendored
-module license notices under /usr/share/doc/mygoframe/third-party/.
+baseline and supplies its data/modules. The package includes Swift, Foundation, ICU, Go, Rust standard-library,
+and vendored module license notices under /usr/share/doc/mygoframe/third-party/.
 Corrected application-private GTK/GDK/Fcitx shared libraries are installed in
 /usr/lib/<multiarch>/mygoframe/native/. Their post-strip manifest records
 the matching system GTK hash and private-library hashes. Complete native

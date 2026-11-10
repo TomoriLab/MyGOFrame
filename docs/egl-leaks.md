@@ -22,7 +22,7 @@ Installed `nvidia-application-profiles-615.78.08-rc` contains `DisableDBus` and 
 
 ## Startup policy
 
-`internal/graphicsruntime.Prepare` runs before MyGo initializes graphics. The native color and EGL lifecycle diagnostics use equivalent Python discovery. Both consume the same policy fixtures.
+`src/internal/platform/infrastructure/graphics.Prepare` runs before MyGo initializes graphics. The native color and EGL lifecycle diagnostics use equivalent Python discovery. Both consume the same policy fixtures.
 
 1. Read `/sys/module/nvidia/version`. Apply defaults only for exact version `615.78.08`; missing, future, and other versions keep their normal configuration.
 2. Discover installed EGL platform/vendor manifests by `ICD.library_path`, rather than fixed filenames. Default platform directories include `/etc/egl/egl_external_platform.d` and `/usr/share/egl/egl_external_platform.d`, as described in the [NVIDIA maintainer's loader explanation](https://github.com/NVIDIA/egl-wayland/issues/39).
@@ -51,7 +51,7 @@ For ASan color validation, build the instrumented media library and use its matc
 RUSTC_BOOTSTRAP=1 \
 RUSTFLAGS='-Zsanitizer=address -C link-arg=-fuse-ld=lld' \
 CARGO_TARGET_DIR="$PWD/build/rust-gpu-asan" \
-cargo build --manifest-path core/rust/Cargo.toml --offline --lib
+cargo build --manifest-path src/rust/Cargo.toml --offline --lib
 
 LD_PRELOAD=/usr/lib/llvm-23/lib/clang/23/lib/linux/libclang_rt.asan-x86_64.so \
 PYTHONMALLOC=malloc \

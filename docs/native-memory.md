@@ -46,7 +46,7 @@ The original display/input-method verification retained the independently reprod
 
 ```sh
 make
-CC=clang-23 CGO_ENABLED=1 python3 tools/go-mygoframe.py build -asan -o build/mygoframe-asan ./cmd/mygoframe
+CC=clang-23 CGO_ENABLED=1 python3 tools/go-mygoframe.py build -asan -o build/mygoframe-asan ./src/cmd/mygoframe
 ```
 
 Remove inherited explicit graphics compatibility selectors before startup to exercise the tested automatic route. Keep `GTK_IM_MODULE=fcitx`, `ASAN_OPTIONS=detect_leaks=1:leak_check_at_exit=1:halt_on_error=1`, and `LSAN_OPTIONS=detect_leaks=1:leak_check_at_exit=1:exitcode=23`. Run cases sequentially and retain complete output, mapped library hashes, selected environment, and actual exits:

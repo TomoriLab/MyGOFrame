@@ -75,7 +75,7 @@ class GraphicsRuntimeTests(unittest.TestCase):
             self.assertEqual(environment, {"WAYLAND_DISPLAY": "wayland-1"})
 
     def test_shared_go_and_python_policy_fixtures(self):
-        fixtures = json.loads((ROOT / "internal/graphicsruntime/testdata/policy-cases.json").read_text())
+        fixtures = json.loads((ROOT / "src/internal/platform/infrastructure/graphics/testdata/policy-cases.json").read_text())
         for fixture in fixtures:
             with self.subTest(fixture=fixture["name"]), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)

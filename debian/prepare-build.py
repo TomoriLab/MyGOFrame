@@ -40,6 +40,14 @@ if not go_license.is_file():
 if not go_license.is_file():
     raise SystemExit("The Go toolchain license or Debian copyright file is required.")
 shutil.copy2(go_license, notices / "Go-LICENSE")
+rust_compiler = os.environ.get("RUSTC", "rustc")
+rust_root = Path(subprocess.check_output([rust_compiler, "--print", "sysroot"], text=True).strip())
+rust_copyright = rust_root / "share/doc/rust/COPYRIGHT-library.html"
+if not rust_copyright.is_file():
+    rust_copyright = Path("/usr/share/doc/libstd-rust-dev/copyright")
+if not rust_copyright.is_file():
+    raise SystemExit("The Rust standard-library copyright and license notices are required.")
+shutil.copy2(rust_copyright, notices / ("Rust-COPYRIGHT-library.html" if rust_copyright.suffix == ".html" else "Rust-copyright"))
 owner = subprocess.run(["dpkg-query", "-S", str(go_root / "bin/go")], text=True, capture_output=True)
 source = ""
 if owner.returncode == 0:

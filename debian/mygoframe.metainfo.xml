@@ -6,7 +6,7 @@
   <metadata_license>MIT</metadata_license>
   <project_license>MIT</project_license>
   <developer id="dev.tomori">
-    <name>TomoriLab</name>
+    <name>Euiseo Cha / Tomori Lab</name>
   </developer>
   <description>
     <p>
@@ -18,6 +18,12 @@
       Adjust audio monitoring volume or open a separate video-only window
       for application sharing. The preview preserves the video aspect ratio
       when either window is resized.
+    </p>
+    <p>
+      Record to MKV or MP4 with H.264, HEVC, or AV1 hardware encoding on a
+      compatible GPU. Choose the GPU and bitrate, record capture-card audio,
+      and control speaker monitoring independently. Save named presets and
+      inspect application information and open-source license notices.
     </p>
   </description>
   <launchable type="desktop-id">mygoframe.desktop</launchable>
@@ -37,6 +43,12 @@
   </supports>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.1.2" date="2026-11-10" type="development">
+      <description>
+        <p>Hardware recording, saved presets, native app and license dialogs,
+        domain-based source organization, and smoother recording previews.</p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-11-09" type="development" />
     <release version="0.1.0" date="2026-11-07" type="development" />
   </releases>

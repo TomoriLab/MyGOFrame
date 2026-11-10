@@ -1,2 +1,4 @@
 debian/third-party/
 debian/go-static-built-using
+src/internal/about/infrastructure/notices/catalog_generated.go
+src/internal/about/infrastructure/notices/catalog_generated.go.new

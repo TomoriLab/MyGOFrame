@@ -54,9 +54,9 @@ USB URB payload → UVC video buffer → Rust swscale/decode → Rust RGBA pool
 
 | Component | Current behavior and source reference |
 | --- | --- |
-| Rust capture | `core/rust/src/video.rs:788`, `:801`, `:939`, `:978`: creates the converter, allocates MMAP buffers, converts a dequeued buffer, and requeues it after CPU conversion. |
-| Native frame ABI | `core/include/rust_core.h`: exposes an RGBA pointer, byte length, dimensions, and lease token; no plane descriptors, DMA-BUF FDs, modifiers, or GPU fences. |
-| Go presenter | `internal/core/bridge_linux.go:220` and `cmd/mygoframe/app.go:77`: wrap native RGBA and update a shared Bitmap before releasing the previous frame. |
+| Rust capture | `src/rust/src/capture/infrastructure/v4l2.rs`: creates the converter, allocates MMAP buffers, converts a dequeued buffer, and requeues it after CPU conversion. |
+| Native frame ABI | `src/abi/rust_core.h`: exposes an RGBA pointer, byte length, dimensions, and lease token; no plane descriptors, DMA-BUF FDs, modifiers, or GPU fences. |
+| Go presenter | `src/internal/session/infrastructure/native/bridge_linux.go` and `src/internal/desktop/presentation/app.go`: wrap native RGBA and update a shared Bitmap before releasing the previous frame. |
 | MyGo image representation | `ui/bitmap.go:143` and `internal/scene/scene.go:454`: CPU pixel storage without a public external-image representation. |
 | MyGo GPU upload | `internal/gpu/gl/gl.go:530`: renderer-local image cache and `glTexSubImage2D` on pixel version changes. |
 | MyGo scaling | `ui/paint.go:1651` and `ui/bitmap.go:256`: smaller viewports can regenerate CPU downsample levels before upload. |

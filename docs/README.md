@@ -5,6 +5,11 @@ Read [Architecture and memory ownership](architecture.md) before changing the Go
 ## Language boundaries
 
 - [Go, Swift, and Rust responsibilities](language-boundaries.md): session policy, versioned handles, resource ownership, and frame notifications.
+- [Recording](recording.md): GPU encoding, capture audio, file ownership, and validation.
+- [Settings preset storage](presets.md): native controls, persistent configuration, validation, and recovery.
+
+- [Native settings design](ui-design.md): Fluent styling, overview cards, and hierarchical detail navigation.
+- [App information and licenses](about-and-licenses.md): native modal navigation, embedded notices, and build-time component inventory.
 
 ## Renderer integration
 
@@ -18,6 +23,7 @@ Read [Architecture and memory ownership](architecture.md) before changing the Go
 
 ## Research
 
+- [Hardware-accelerated recording plan](recording-plan.md): GPU selection, codecs, audio routing, ownership, and staged validation.
 - [DMA-BUF feasibility](dmabuf-research.md): actual capture-to-GPU import results, renderer requirements, and buffer lifetime design.
 - [DMA-BUF color validation](dmabuf-color-validation.md): production color comparisons, source cache-coherency diagnosis, and measured limits.
 
@@ -25,11 +31,14 @@ Read [Architecture and memory ownership](architecture.md) before changing the Go
 
 | Area | Location |
 | --- | --- |
-| MyGo native UI, settings, and capture window | `cmd/mygoframe/` |
-| Go bridge and frame access API | `internal/core/` |
-| Swift session control and application policies | `core/swift/` |
-| Rust video and audio core | `core/rust/src/` |
-| Native ABI declarations | `core/include/` |
+| Executable entry point | `src/cmd/mygoframe/` |
+| MyGo native UI, settings, capture window, and diagnostic CLI | `src/internal/desktop/presentation/` |
+| Go domain contracts and injectable ports | `src/internal/<domain>/domain/`, `src/internal/<domain>/application/` |
+| Production adapter composition | `src/internal/bootstrap/`, `src/swift/bootstrap/` |
+| Go bridge and frame access API | `src/internal/session/infrastructure/native/` |
+| Swift domain rules, application services, and native adapters | `src/swift/<domain>/` |
+| Rust capture, audio, recording, and rendering domains | `src/rust/src/<domain>/` |
+| Native ABI declarations | `src/abi/` |
 | Retained Swift media regression implementation | `tests/legacy/swift/` |
 | Build and verification targets | `Makefile` |
 

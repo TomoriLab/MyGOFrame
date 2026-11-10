@@ -1,6 +1,6 @@
 # MyGOFrame
 
-MyGOFrame is a Linux capture-card viewer for playing console games through a capture preview. Its [MyGo native UI](https://mygo.egoist.dev/docs/ui) follows Fluent 2-inspired styling and the system's light or dark appearance. Settings are grouped into Video, Audio, and Sharing tabs.
+MyGOFrame is a Linux capture-card viewer for playing console games through a capture preview. Its [MyGo native UI](https://mygo.egoist.dev/docs/ui) follows Fluent 2-inspired styling and the system's light or dark appearance. The settings overview opens Video, Audio, Recording, and Presets detail pages.
 
 ## Features
 
@@ -9,20 +9,36 @@ MyGOFrame is a Linux capture-card viewer for playing console games through a cap
 - Use a DMA-BUF GPU path for progressive NV12, P010, YUYV, UYVY, BGR24, and RGB24 SDR capture, with automatic CPU fallback.
 - Monitor a selected PipeWire audio input through the default or a selected output.
 - Adjust monitoring volume, mute, and stop audio independently of video.
+- Record AV1, HEVC/H.265, or H.264 with a selected hardware GPU and target bitrate.
+- Record capture-card audio independently of speaker monitoring, volume, and mute.
+- Save named settings presets and restore them across application restarts.
+- Select a saved preset and start video from the command area; switch presets while video is running.
 - Fit the complete video inside the available viewport while preserving its aspect ratio.
 - Open a separate video-only window for Discord or other window-sharing applications.
+- Switch between light and dark themes with the sun/moon button in the settings header.
+- Open app and developer information below Presets, with searchable offline dependency notices and full licenses in separate dialogs.
 - Enter fullscreen with F11. Escape returns to the controls.
 
 Supported video formats are YUYV, UYVY, NV12, P010, BGR24, RGB24, and MJPEG. The UI lists combinations reported by the device that the core can decode. Video capture uses the V4L2 single-planar streaming API. Multi-planar-only devices, interlaced capture, and other compressed codecs are not supported.
 
 For devices exposing continuous or stepwise capabilities, the menus include supported common modes and valid range endpoints. They do not enumerate every possible resolution or frame interval.
 
+When presets are saved, the top quick controls provide a preset selector and Start video. Selecting another preset during capture restarts video with that configuration. During recording, preset switching is locked. The last selected preset is remembered; launching the application does not start capture automatically.
+
+## Recording
+
+Start video and select the capture card's microphone/input device in Audio when sound is required. Open Recording, choose a detected GPU, codec, target bitrate, rate control, and an absolute `.mkv` or `.mp4` output path. An empty path creates a unique file under `~/Videos/MyGOFrame/`. Start recording from that page or the command bar. Stop recording finalizes the file while preview continues. Stopping video or closing the application also finalizes recording.
+
+Monitor audio controls only the speaker branch. Monitor volume, mute, and output changes do not change recorded input levels. Audio input changes are locked during recording. Saved presets include recording configuration and monitoring selection; applying a preset never starts recording.
+
+The Linux backends are NVIDIA NVENC, Intel QSV, and AMD VA-API on supporting devices and drivers. The UI probes encoder availability. The initial implementation uses bounded CPU staging followed by hardware upload; it does not directly import DMA-BUF into the encoder. NVIDIA was tested locally. Intel and AMD require hardware validation. See [recording ownership and validation](docs/recording.md).
+
 ## Debian package
 
 A local Debian sid amd64 package can be built with `make deb`. Install the result with:
 
 ```sh
-sudo apt install ./build/debian/mygoframe_0.1.1-1_amd64.deb
+sudo apt install ./build/debian/mygoframe_0.1.2-1_amd64.deb
 ```
 
 The package includes the Swift runtime and installs a desktop launcher. Build requirements, source rebuilding, and verification are documented in [Debian packaging](docs/debian.md).
@@ -38,11 +54,11 @@ Requirements:
 | Go | 1.27.3 or newer, required by MyGo 0.8.1 |
 | Rust | Rust toolchain with Cargo and the `bindgen` CLI; validated with Rust 1.99.1 and bindgen 0.72.1 |
 | Build tools | GNU Make, Python 3, GNU patch, pkg-config, Linux headers, libclang, and a C compiler for cgo; LLD for sanitizer tests |
-| Video libraries | FFmpeg libavcodec, libavutil, libswscale development packages |
+| Video libraries | FFmpeg libavcodec, libavutil, libswscale, libavformat, libswresample development packages |
 | Audio libraries | PipeWire libpipewire-0.3 development package and a running session manager |
 | Rendering | GTK 3 and OpenGL runtime libraries; EGL, GLES 3 external textures, linear R8 DMA-BUF import, and native fence export for the DMA-BUF path |
 
-On Debian, the native development packages are `build-essential`, `pkg-config`, `libclang-dev`, `libavcodec-dev`, `libavutil-dev`, `libswscale-dev`, and `libpipewire-0.3-dev`. Install `lld` to run the sanitizer targets. Install the [Swift Linux toolchain](https://www.swift.org/install/linux/) and [Rust toolchain](https://www.rust-lang.org/tools/install) separately. Install the `bindgen` CLI with `cargo install bindgen-cli`. The `swift` executable from Python's OpenStack Swift client is unrelated to the Swift compiler.
+On Debian, the native development packages are `build-essential`, `pkg-config`, `libclang-dev`, `libavcodec-dev`, `libavutil-dev`, `libswscale-dev`, `libavformat-dev`, `libswresample-dev`, and `libpipewire-0.3-dev`. Install `lld` to run the sanitizer targets. Install the [Swift Linux toolchain](https://www.swift.org/install/linux/) and [Rust toolchain](https://www.rust-lang.org/tools/install) separately. Install the `bindgen` CLI with `cargo install bindgen-cli`. The `swift` executable from Python's OpenStack Swift client is unrelated to the Swift compiler.
 
 ```sh
 make check-dependencies
@@ -68,9 +84,23 @@ Select the capture device and video settings, then start the preview. Select the
 
 The preview scales to the available space and adds black borders when the window and video have different aspect ratios. Capture resolution does not determine the minimum window size. Windows smaller than 800 logical pixels wide or 480 pixels high move the controls into a scrollable **Settings** dialog so the sidebar cannot consume the video viewport. The minimum window content size is 320 × 240. Use `--window-width` and `--window-height` to select the initial size.
 
+## Settings presets
+
+Open **Settings → Presets**, enter a name, and select **Save new preset**. Presets store the selected video device and exact mode, color range, processing backend, audio source and output, volume, mute, and whether the capture window is open. **Update preset** replaces the selected preset with the current settings. **Delete preset** asks for confirmation.
+
+Stop video before selecting **Apply preset**. The application checks that the saved devices and mode are available, restores the controls, and applies the saved audio monitoring selection. Start video when ready. Presets remain available after restarting the application; startup does not apply them or start monitoring automatically.
+
+Presets are stored in `$XDG_CONFIG_HOME/mygoframe/presets.json`, or `~/.config/mygoframe/presets.json` by default. **Reload presets** refreshes the list after another instance changes it. Invalid or unsupported files are not overwritten. Save failures appear in the Presets tab. Storage limits and recovery are documented in [Settings preset storage](docs/presets.md).
+
+## App information and licenses
+
+Open **Settings → About**, immediately below Presets. The native dialog shows the application version, developer, contact address, source repository, and application MIT license. Search the component list by name or license and select a component to open its full notices in another dialog. License text supports selection, scrolling, and copying. Escape closes the top dialog and returns to the previous one.
+
+Notices are embedded when the application is built and remain readable offline. They cover Go modules, language runtimes, the private native runtime, and system libraries found on the build machine. System versions describe that build snapshot; optional vendor runtimes keep their own terms. The [catalog documentation](docs/about-and-licenses.md) describes notice sources and regeneration.
+
 ## Capture window and screen sharing
 
-Select **Capture window** in the toolbar or **Settings → Sharing → Open capture window**. In Discord's window picker, select **MyGOFrame Capture**. This separate native window contains only the video and black borders; device names, settings, and status messages remain in the controls window. It stays visible and receives frames when the controls window is minimized. Closing it leaves capture running, and opening it again reuses the same capture stream. Closing the controls window closes both windows and releases the devices.
+Select **Capture window** in the toolbar. In Discord's window picker, select **MyGOFrame Capture**. This separate native window contains only the video and black borders; device names, settings, and status messages remain in the controls window. It stays visible and receives frames when the controls window is minimized. Closing it leaves capture running, and opening it again reuses the same capture stream. Closing the controls window closes both windows and releases the devices.
 
 The capture window can be resized independently, with a minimum content size of 320 × 180. F11 and Escape control fullscreen for the focused window.
 
