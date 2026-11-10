@@ -1,4 +1,4 @@
-.TH MYGOFRAME 1 "2026-11-10" "MyGOFrame 0.1.3" "User Commands"
+.TH MYGOFRAME 1 "2026-11-11" "MyGOFrame 0.2.0" "User Commands"
 .SH NAME
 mygoframe \- view and record capture-card video and audio
 .SH SYNOPSIS
@@ -26,6 +26,16 @@ Select a saved preset in the command area to start video without opening setting
 Applying a preset does not start recording.
 The app information dialog includes developer details and full component licenses.
 .SH OPTIONS
+.TP
+.B \-debug[=true|false]
+Override saved GUI debug mode for this launch.
+App settings provides persistent activation and bounded diagnostic report copying.
+.TP
+.B \-version
+Show the application version and source revision without starting capture.
+.TP
+.B \-version-json
+Show release and build identity as JSON without starting capture.
 .TP
 .B \-h, \-help
 Display command-line help.
@@ -149,6 +159,12 @@ Open the graphical interface with a separate sharing window:
 mygoframe --capture-window
 .RE
 .fi
+.SH ENVIRONMENT
+.TP
+.I MYGO_LOCALE
+Select the UI language for this launch: en, ko, or ja.
+Settings > App settings > Language provides persistent selection.
+The default follows the system language with English fallback.
 .SH FILES
 .TP
 .I $XDG_CONFIG_HOME/mygoframe/presets.json

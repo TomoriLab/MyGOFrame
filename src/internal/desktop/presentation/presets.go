@@ -79,8 +79,10 @@ func (application *applicationState) presetOperation(request session.PresetReque
 			application.presetBusy = false
 			if err != nil {
 				application.presetError = err.Error()
+				application.debugEvent("preset.failed", err.Error())
 				return
 			}
+			application.debugEvent("preset."+request.Operation, request.Name)
 			application.acceptPresets(document, preferred)
 			switch request.Operation {
 			case "save":
@@ -197,14 +199,14 @@ func (application *applicationState) applyPresetSelection(result session.PresetR
 
 func (application *applicationState) presetControls(context *ui.Context) {
 	disabled := application.busy || application.presetBusy
-	ui.Text(context, "Settings presets").FontSize(16).FontWeight(600)
+	ui.Text(context, text(context, "Settings presets")).FontSize(16).FontWeight(600)
 	helpText(context, "Save video, audio, volume, and capture-window settings for each console.")
 	names := make([]string, 0, len(application.presets))
 	for _, preset := range application.presets {
 		names = append(names, preset.Name)
 	}
 	field(context, "Saved preset", func() {
-		if ui.Select(context.Key("preset-selection"), &application.selectedPreset, names).FillWidth().Label("Saved preset").Disabled(disabled || len(names) == 0).Changed() {
+		if ui.Select(context.Key("preset-selection"), &application.selectedPreset, names).FillWidth().Label(text(context, "Saved preset")).Disabled(disabled || len(names) == 0).Changed() {
 			application.presetDeletePending = false
 			application.presetNotice = ""
 		}
@@ -212,33 +214,33 @@ func (application *applicationState) presetControls(context *ui.Context) {
 	if len(names) == 0 {
 		helpText(context, "No saved presets yet.")
 	}
-	if ui.PrimaryButton(context.Key("apply-preset"), "Apply preset").FillWidth().Disabled(disabled || application.running || application.status.Recording.Active() || application.selectedPreset == "").Clicked() {
+	if ui.PrimaryButton(context.Key("apply-preset"), text(context, "Apply preset")).FillWidth().Disabled(disabled || application.running || application.status.Recording.Active() || application.selectedPreset == "").Clicked() {
 		application.applyPreset()
 	}
 	helpText(context, "Stop video before applying. Audio monitoring follows the saved selection.")
 	field(context, "New preset name", func() {
-		ui.TextInput(context.Key("preset-name"), &application.presetName).FillWidth().Label("Preset name input").Disabled(disabled)
+		ui.TextInput(context.Key("preset-name"), &application.presetName).FillWidth().Label(text(context, "Preset name input")).Disabled(disabled)
 	})
 	_, valid := application.selection.selected()
-	if ui.Button(context.Key("save-preset"), "Save new preset").FillWidth().Disabled(disabled || !valid || strings.TrimSpace(application.presetName) == "").Clicked() {
+	if ui.Button(context.Key("save-preset"), text(context, "Save new preset")).FillWidth().Disabled(disabled || !valid || strings.TrimSpace(application.presetName) == "").Clicked() {
 		application.savePreset(false)
 	}
-	if ui.Button(context.Key("update-preset"), "Update preset").FillWidth().Disabled(disabled || !valid || application.selectedPreset == "").Clicked() {
+	if ui.Button(context.Key("update-preset"), text(context, "Update preset")).FillWidth().Disabled(disabled || !valid || application.selectedPreset == "").Clicked() {
 		application.savePreset(true)
 	}
 	helpText(context, "Update preset replaces the selected preset with the current settings.")
 	if application.presetDeletePending {
 		helpText(context, "Delete the selected preset?")
-		if ui.Button(context.Key("confirm-delete-preset"), "Confirm delete").FillWidth().Disabled(disabled).Clicked() {
+		if ui.Button(context.Key("confirm-delete-preset"), text(context, "Confirm delete")).FillWidth().Disabled(disabled).Clicked() {
 			application.presetOperation(session.PresetRequest{Operation: "delete", Name: application.selectedPreset})
 		}
-		if ui.Button(context.Key("cancel-delete-preset"), "Cancel").FillWidth().Disabled(disabled).Clicked() {
+		if ui.Button(context.Key("cancel-delete-preset"), text(context, "Cancel")).FillWidth().Disabled(disabled).Clicked() {
 			application.presetDeletePending = false
 		}
-	} else if ui.Button(context.Key("delete-preset"), "Delete preset").FillWidth().Disabled(disabled || application.selectedPreset == "").Clicked() {
+	} else if ui.Button(context.Key("delete-preset"), text(context, "Delete preset")).FillWidth().Disabled(disabled || application.selectedPreset == "").Clicked() {
 		application.presetDeletePending = true
 	}
-	if ui.Button(context.Key("reload-presets"), "Reload presets").FillWidth().Disabled(disabled).Clicked() {
+	if ui.Button(context.Key("reload-presets"), text(context, "Reload presets")).FillWidth().Disabled(disabled).Clicked() {
 		application.presetOperation(session.PresetRequest{Operation: "list"})
 	}
 	if application.presetBusy {
@@ -248,7 +250,7 @@ func (application *applicationState) presetControls(context *ui.Context) {
 		helpText(context, application.presetNotice)
 	}
 	if application.presetError != "" {
-		ui.Text(context, application.presetError).FontSize(12).TextColor(context.Theme().Danger)
+		ui.Text(context, text(context, application.presetError)).FontSize(12).TextColor(context.Theme().Danger)
 	}
 }
 
@@ -322,18 +324,18 @@ func (application *applicationState) quickPresetControls(context *ui.Context, se
 	}
 	groupWidth := selectorWidth + gap + 264
 	if showLabel {
-		groupWidth += 40 + gap
+		groupWidth += presetLabelWidth(context) + gap
 	}
-	group := ui.Row(context).Width(groupWidth).Height(32).Shrink(0).Gap(gap).AlignItems(ui.Center).Label("Quick capture controls")
+	group := ui.Row(context).Width(groupWidth).Height(32).Shrink(0).Gap(gap).AlignItems(ui.Center).Label(text(context, "Quick capture controls"))
 	if stacked {
 		group.Column().Width(selectorWidth).Height(72).Gap(8).AlignItems(ui.Stretch)
 	}
 	group.Children(func() {
 		if showLabel {
-			ui.Text(context, "Preset").Width(40).Shrink(0).FontSize(12).TextColor(context.Theme().TextMuted).SingleLine()
+			ui.Text(context, text(context, "Preset")).Width(presetLabelWidth(context)).Shrink(0).FontSize(12).TextColor(context.Theme().TextMuted).SingleLine()
 		}
 		previous := application.selectedPreset
-		if ui.Select(context.Key("quick-preset"), &application.selectedPreset, names).Width(selectorWidth).Height(32).Shrink(0).Label("Quick preset selection").Tooltip("Capture preset").Disabled(disabled || application.status.Recording.Active()).Changed() {
+		if ui.Select(context.Key("quick-preset"), &application.selectedPreset, names).Width(selectorWidth).Height(32).Shrink(0).Label(text(context, "Quick preset selection")).Tooltip(text(context, "Capture preset")).Disabled(disabled || application.status.Recording.Active()).Changed() {
 			application.activateSelectedPreset(false, previous)
 		}
 		actions := func() {
@@ -343,7 +345,7 @@ func (application *applicationState) quickPresetControls(context *ui.Context, se
 				label = "Stop video"
 			}
 			buttonDisabled := disabled || (!application.running && (!selectedExists || application.status.Recording.Active()))
-			if ui.PrimaryButton(context.Key("quick-video-toggle"), label).Size(128, 32).Label("Preset video action").Shrink(0).Disabled(buttonDisabled).Clicked() {
+			if ui.PrimaryButton(context.Key("quick-video-toggle"), text(context, label)).Size(128, 32).Label(text(context, "Preset video action")).Shrink(0).Disabled(buttonDisabled).Clicked() {
 				if application.running {
 					application.stopVideo()
 				} else {

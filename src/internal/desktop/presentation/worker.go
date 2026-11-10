@@ -9,17 +9,22 @@ import (
 	"time"
 
 	capture "github.com/TomoriLab/MyGOFrame/src/internal/capture/application"
+	desktopapp "github.com/TomoriLab/MyGOFrame/src/internal/desktop/application"
 	sessionapp "github.com/TomoriLab/MyGOFrame/src/internal/session/application"
 	session "github.com/TomoriLab/MyGOFrame/src/internal/session/domain"
 
+	"github.com/TomoriLab/MyGOFrame/src/internal/desktop/presentation/localization"
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 )
 
 type command struct {
-	run func(*captureWorker) (func(*applicationState), error)
+	name string
+	run  func(*captureWorker) (func(*applicationState), error)
 }
 
 type captureWorker struct {
+	diagnostics    desktopapp.Diagnostics
 	engine         sessionapp.Engine
 	window         *mygo.Window
 	presentation   atomic.Pointer[mygo.Window]
@@ -44,7 +49,7 @@ func newWorker(engine sessionapp.Engine, window *mygo.Window, application *appli
 	if err != nil {
 		return nil, err
 	}
-	worker := &captureWorker{engine: engine, window: window, application: application, commands: make(chan command, 16), stop: make(chan struct{}), done: make(chan struct{}), controlChanged: make(chan struct{}, 1), frameEvents: events, frameReady: make(chan struct{}, 1), eventErrors: make(chan error, 1), readerDone: make(chan struct{})}
+	worker := &captureWorker{diagnostics: application.services.Diagnostics, engine: engine, window: window, application: application, commands: make(chan command, 16), stop: make(chan struct{}), done: make(chan struct{}), controlChanged: make(chan struct{}, 1), frameEvents: events, frameReady: make(chan struct{}, 1), eventErrors: make(chan error, 1), readerDone: make(chan struct{})}
 	worker.setAudioControls(session.AudioControls{Volume: application.volume / 100, Muted: application.muted})
 	go worker.readFrameEvents()
 	go worker.run()
@@ -76,7 +81,13 @@ func (worker *captureWorker) run() {
 		case <-worker.stop:
 			return
 		case operation := <-worker.commands:
+			worker.debugEvent("command.started", operation.name)
 			apply, err := operation.run(worker)
+			if err != nil {
+				worker.debugEvent("command.failed", operation.name+" "+err.Error())
+			} else {
+				worker.debugEvent("command.completed", operation.name)
+			}
 			snapshot, snapshotError := worker.engine.Snapshot()
 			worker.post(func(application *applicationState) {
 				application.busy = false
@@ -93,9 +104,12 @@ func (worker *captureWorker) run() {
 			})
 		case <-worker.controlChanged:
 			if controls := worker.controls.Load(); controls != nil {
-				_ = worker.engine.SetAudioControls(*controls)
+				if err := worker.engine.SetAudioControls(*controls); err != nil {
+					worker.debugEvent("audio.controls-failed", err.Error())
+				}
 			}
 		case err := <-worker.eventErrors:
+			worker.debugEvent("frame.notification-failed", err.Error())
 			worker.post(func(application *applicationState) {
 				application.errorMessage = err.Error()
 				application.running = false
@@ -106,6 +120,7 @@ func (worker *captureWorker) run() {
 			frame, err := worker.engine.AcquireFrame(worker.afterSequence)
 			if err != nil && err.Error() != lastFrameError {
 				lastFrameError = err.Error()
+				worker.debugEvent("frame.acquire-failed", lastFrameError)
 				worker.post(func(application *applicationState) { application.errorMessage = err.Error() })
 			}
 			if frame != nil {
@@ -164,8 +179,9 @@ func (application *applicationState) submit(notice string, run func(*captureWork
 	application.busy = true
 	application.errorMessage = ""
 	application.notice = notice
+	application.debugEvent("command.queued", notice)
 	select {
-	case application.worker.commands <- command{run: run}:
+	case application.worker.commands <- command{name: notice, run: run}:
 	default:
 		application.busy = false
 		application.errorMessage = "Another operation is still pending."
@@ -184,6 +200,25 @@ func (application *applicationState) applySnapshot(status session.SessionSnapsho
 	if status.CommandID < application.status.CommandID {
 		return
 	}
+	previous := application.status
+	if status.Error != "" && status.Error != previous.Error {
+		application.debugEvent("session.error", status.Error)
+	}
+	if status.Audio.Error != "" && status.Audio.Error != previous.Audio.Error {
+		application.debugEvent("audio.error", status.Audio.Error)
+	}
+	if status.Recording.Error != "" && status.Recording.Error != previous.Recording.Error {
+		application.debugEvent("recording.error", status.Recording.Error)
+	}
+	if status.VideoPhase != previous.VideoPhase {
+		application.debugEvent("video.phase", status.VideoPhase+" "+status.VideoBackend)
+	}
+	if status.AudioPhase != previous.AudioPhase {
+		application.debugEvent("audio.phase", status.AudioPhase)
+	}
+	if status.Recording.Phase != previous.Recording.Phase {
+		application.debugEvent("recording.phase", status.Recording.Phase)
+	}
 	application.status = status
 	application.monitorAudio = status.MonitorEnabled
 	if status.Error != "" {
@@ -198,11 +233,11 @@ func (application *applicationState) applySnapshot(status session.SessionSnapsho
 	application.running = status.VideoRunning
 }
 
-func statusSummary(status session.SessionSnapshot) string {
+func statusSummary(status session.SessionSnapshot, contexts ...*ui.Context) string {
 	if status.SchemaVersion == 0 {
-		return "Ready"
+		return localization.Text(messageLocale(contexts), "Ready")
 	}
-	summary := fmt.Sprintf("Captured %d frames · skipped %d frames", status.Frames, status.DroppedFrames)
+	summary := localization.Format(messageLocale(contexts), "Captured {frames, plural, one {# frame} other {# frames}} · skipped {dropped, plural, one {# frame} other {# frames}}", map[string]any{"frames": status.Frames, "dropped": status.DroppedFrames})
 	if status.VideoBackend == "dmabuf" {
 		return "DMA-BUF · " + summary
 	}
@@ -210,4 +245,10 @@ func statusSummary(status session.SessionSnapshot) string {
 		return "CPU · " + summary
 	}
 	return summary
+}
+
+func (worker *captureWorker) debugEvent(name, detail string) {
+	if worker.diagnostics != nil {
+		worker.diagnostics.Record(name, detail)
+	}
 }

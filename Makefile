@@ -28,7 +28,7 @@ RUST_SOURCES := $(shell rg --files src/rust -g '*.rs' -g 'Cargo.toml')
 RUST_ASAN := RUSTC_BOOTSTRAP=1 RUSTFLAGS='-Zsanitizer=address -C link-arg=-fuse-ld=lld' CARGO_TARGET_DIR='$(CURDIR)/build/rust-asan-target' ASAN_OPTIONS='detect_leaks=1:halt_on_error=1:abort_on_error=1' LSAN_OPTIONS='exitcode=23:report_objects=1'
 HEADERS := $(wildcard src/abi/*)
 
-.PHONY: all core native-runtime native-inputs run deb install-desktop test test-architecture test-race test-mygo-ownership test-mygo-ownership-race test-sanitize test-thread-sanitize test-audio-integration test-egl-integration test-font-integration check-dependencies clean
+.PHONY: all core native-runtime native-inputs run deb install-desktop test test-architecture test-race test-mygo-ownership test-mygo-ownership-race test-sanitize test-thread-sanitize test-audio-integration test-egl-integration test-font-integration check-dependencies check-version test-l10n force-version clean
 all: build/mygoframe
 core: build/libmygoframe_core.so
 
@@ -59,12 +59,27 @@ build/libmygoframe_core.so: build/libmygoframe_media.so $(SWIFT_SOURCES) $(HEADE
 	mv -f $@.new $@
 
 ABOUT_INPUTS := tools/prepare-about.py LICENSE debian/changelog native/runtime-lock.json $(shell rg --files native/notices debian/runtime-notices)
+L10N_INPUTS := tools/prepare-l10n.py $(wildcard l10n/*.json)
+VERSION_INPUTS := tools/version.py version.json debian/changelog src/rust/Cargo.toml src/rust/Cargo.lock debian/mygoframe.1 debian/mygoframe.metainfo.xml
 
-build/mygoframe: build/libmygoframe_core.so $(shell rg --files src/cmd src/internal -g '*.go' -g '*.png') tools/prepare-mygo.py tools/go-mygoframe.py $(ABOUT_INPUTS) $(wildcard patches/mygo/*.patch) go.mod go.sum | native-runtime
+force-version:
+
+src/internal/version/domain/version_generated.go: force-version $(VERSION_INPUTS) | build
+	python3 tools/version.py generate
+
+build/mygoframe: src/internal/version/domain/version_generated.go build/libmygoframe_core.so $(shell rg --files src/cmd src/internal -g '*.go' -g '*.png') tools/prepare-mygo.py tools/go-mygoframe.py $(ABOUT_INPUTS) $(L10N_INPUTS) $(VERSION_INPUTS) $(wildcard patches/mygo/*.patch) go.mod go.sum | native-runtime
 	CGO_ENABLED=1 $(MYGO_GO) build -trimpath $(GO_BUILD_FLAGS) -o $@ ./src/cmd/mygoframe
 
 run: all
 	./build/mygoframe
+
+check-version:
+	python3 tools/version.py check
+
+test-l10n:
+	python3 tools/prepare-l10n.py
+	python3 -m unittest discover -s tests -p 'test_l10n.py'
+	CGO_ENABLED=0 $(MYGO_GO) test ./src/internal/desktop/presentation/localization
 
 deb:
 	python3 tools/build-debian.py
@@ -87,10 +102,10 @@ build/session-tests: $(SWIFT_SOURCES) $(SESSION_TEST_SOURCES) build/libmygoframe
 build/policy-tests: $(SWIFT_POLICY_SOURCES) tests/policy_tests.swift | build
 	"$(SWIFTC)" -swift-version 6 -O -g $(SWIFT_POLICY_SOURCES) tests/policy_tests.swift -o $@
 
-test-architecture: build/policy-tests
+test-architecture: build/policy-tests check-version
 	python3 tools/check-architecture.py
 	./build/policy-tests
-	CGO_ENABLED=0 $(GO) test ./src/internal/about/domain ./src/internal/audio/domain ./src/internal/capture/domain ./src/internal/desktop/domain/... ./src/internal/presets/domain ./src/internal/recording/domain ./src/internal/session/domain
+	CGO_ENABLED=0 $(GO) test ./src/internal/about/domain ./src/internal/audio/domain ./src/internal/capture/domain ./src/internal/desktop/domain/... ./src/internal/diagnostics/domain ./src/internal/presets/domain ./src/internal/recording/domain ./src/internal/session/domain ./src/internal/version/domain
 
 test: all build/pool-tests build/video-tests build/audio-tests build/session-tests test-mygo-ownership test-architecture
 	./build/session-tests

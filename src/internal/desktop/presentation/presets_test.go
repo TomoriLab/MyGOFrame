@@ -28,7 +28,7 @@ func TestPresetNativeControlsAndCurrentSettings(t *testing.T) {
 		t.Fatalf("settings lost: %+v %v", preset, err)
 	}
 	tester := ui.NewTester(application.view, 1280, 1000)
-	if err := tester.Click("Presets"); err != nil {
+	if err := tester.Click("Presets settings"); err != nil {
 		t.Fatal(err)
 	}
 	if !tester.HasText("Settings presets") || !tester.HasText("No saved presets yet.") {
@@ -68,10 +68,8 @@ func TestCompactPresetTabRemainsReachable(t *testing.T) {
 	if err := tester.Click("Settings"); err != nil {
 		t.Fatal(err)
 	}
-	overview, _ := tester.Find("Settings overview")
-	tester.Scroll(overview.X+overview.W/2, overview.Y+overview.H/2, 0, 240)
-	tester.Advance(time.Second)
-	if err := tester.Click("Presets"); err != nil {
+	revealAboutControl(t, tester, "Settings overview", "Presets settings")
+	if err := tester.Click("Presets settings"); err != nil {
 		t.Fatal(err)
 	}
 	if !tester.HasText("Settings presets") {

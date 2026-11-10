@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 
@@ -24,17 +25,22 @@ def main():
     if output == root:
         raise SystemExit("The package output directory must differ from the repository root.")
     output.mkdir(parents=True, exist_ok=True)
-    version = subprocess.check_output(
-        ["dpkg-parsechangelog", "-SVersion"], cwd=root, text=True
-    ).strip()
+    subprocess.run([sys.executable, str(root / "tools/version.py"), "check"], cwd=root, check=True)
+    information = json.loads(subprocess.check_output(
+        [sys.executable, str(root / "tools/version.py"), "metadata"], cwd=root, text=True))
+    version = information["debianVersion"]
     upstream_version = version.rsplit("-", 1)[0]
     build_directory = Path(tempfile.mkdtemp(prefix="mygoframe-build-"))
     source = build_directory / f"mygoframe-{upstream_version}"
     def ignored(directory, names):
         excluded = {".git", "build", "work", "vendor", "target", "__pycache__",
-                    "catalog_generated.go", "catalog_generated.go.new"}
+                    "catalog_generated.go", "catalog_generated.go.new", "catalogs_generated",
+                    "version_generated.go", "version_generated.go.new"}
         return [name for name in names if name in excluded or (Path(directory) / name).resolve() == output]
     shutil.copytree(root, source, ignore=ignored)
+    (source / "build-source.json").write_text(json.dumps({
+        "revision": information["revision"], "modified": information["modified"]
+    }, sort_keys=True) + "\n")
     environment = os.environ.copy()
     environment.update(GOPROXY="off", GOSUMDB="off", GOTOOLCHAIN="local", GOFLAGS="")
     environment["DEB_BUILD_PROFILES"] = " ".join(filter(None, [
@@ -52,6 +58,8 @@ def main():
         run(["python3", str(root / "tools/prepare-native-runtime.py"), "--download-only"], root, environment)
         # Pinned source archives make the generated Debian source package rebuild offline.
         shutil.copytree(root / "build/native-inputs", source / "native-inputs", dirs_exist_ok=True)
+        run([sys.executable, str(source / "tools/prepare-l10n.py")], source, environment)
+        run([sys.executable, str(source / "tools/version.py"), "generate"], source, environment)
         run(["go", "mod", "vendor"], source, environment)
         module = json.loads(subprocess.check_output(
             ["go", "list", "-mod=mod", "-m", "-json", "github.com/egoist/mygo"],
@@ -69,7 +77,8 @@ def main():
         archive_path = build_directory / f"mygoframe_{upstream_version}.orig.tar.xz"
         def normalized(info):
             relative = Path(info.name).parts[1:]
-            if relative and relative[0] == "debian":
+            if relative and (relative[0] in {"debian", "build"} or "catalogs_generated" in relative
+                             or relative[-1] in {"version_generated.go", "version_generated.go.new"}):
                 return None
             info.uid = info.gid = 0
             info.uname = info.gname = "root"

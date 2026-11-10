@@ -43,6 +43,14 @@
   </supports>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.2.0" date="2026-11-11" type="development">
+      <description>
+        <p>Add English, Korean, and Japanese localization with native app-language selection.</p>
+        <p>Add saved debug-mode controls and bounded in-memory diagnostic reports.</p>
+        <p>Centralize release and build identity in version.json and synchronize Cargo, Debian, AppStream, and manual versions.</p>
+        <p>Package the app settings hierarchy, embedded catalogs, and source provenance for offline rebuilds.</p>
+      </description>
+    </release>
     <release version="0.1.3" date="2026-11-10" type="development">
       <description>
         <p>Update developer attribution and the contact email in app information

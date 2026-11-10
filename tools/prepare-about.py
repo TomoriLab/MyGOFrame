@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 
 class PlainText(HTMLParser):
@@ -225,11 +226,9 @@ def _prepare(go="go", flags=()):
     collect_go(catalog, root, go, flags)
     collect_runtimes(catalog, root)
     collect_system(catalog, root)
-    version = (root / "debian/changelog").read_text().split("(", 1)[1].split(")", 1)[0]
-    catalog.components[0]["version"] = version
-    revision = command(["git", "rev-parse", "--short=12", "HEAD"], root)
-    modified = bool(command(["git", "status", "--porcelain", "--untracked-files=normal"], root))
-    document = {"schemaVersion": 1, "version": version, "revision": revision, "modified": modified,
+    information = json.loads(subprocess.check_output([sys.executable, str(root / "tools/version.py"), "metadata"], cwd=root, text=True))
+    catalog.components[0]["version"] = information["version"]
+    document = {"schemaVersion": 1, **information,
                 "developer": "zeroday0619", "contact": "zero@tomori.dev", "organization": "Tomori Lab",
                 "projectURL": "https://github.com/TomoriLab/MyGOFrame", "components": catalog.components,
                 "documents": catalog.documents}

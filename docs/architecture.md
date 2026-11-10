@@ -21,6 +21,8 @@ src/
     session/infrastructure/native/   # Cgo, frame ownership, native GPU adapter.
     desktop/{application,domain,presentation}/
     about/{domain,infrastructure}/
+    diagnostics/{domain,infrastructure}/ # Bounded diagnostic text and preferences.
+    version/domain/                  # Generated release/build identity.
     platform/infrastructure/
   swift/
     bootstrap/                       # Native composition and exported ABI.

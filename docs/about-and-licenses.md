@@ -1,6 +1,6 @@
 # App information and license notices
 
-The About card follows Presets in the native MyGo settings overview. It opens an information dialog rather than changing the current settings page. Developer identity and contact details match the repository's MIT license and Debian maintainer fields. The version comes from `debian/changelog`; Git revision and working-tree status describe the build inputs when Git metadata is available.
+The About card follows App settings in the native MyGo settings overview. It opens an information dialog rather than changing the current settings page. Developer identity and contact details match the repository's MIT license and Debian maintainer fields. The application and package versions come from `version.json` through the [release metadata generator](versioning.md). Git revision and working-tree status describe the build inputs; source packages preserve that provenance in `build-source.json`.
 
 ## Modal ownership and layout
 

@@ -30,7 +30,9 @@ The helper enables `pkg.mygoframe.external-toolchains` to use the externally pro
 ## Install
 
 ```sh
-sudo apt install ./build/debian/mygoframe_0.1.3-1_amd64.deb
+package_version=$(python3 tools/version.py debian)
+architecture=$(dpkg --print-architecture)
+sudo apt install "./build/debian/mygoframe_${package_version}_${architecture}.deb"
 mygoframe
 ```
 
@@ -45,9 +47,13 @@ The package uses the session's existing V4L2 and PipeWire permissions. It does n
 See `debian/README.source` for rebuilding the `.dsc` source package. The source includes the pinned Go vendor snapshot and runtime license notices. The package build runs the standard software tests unless `DEB_BUILD_OPTIONS=nocheck` is set. Hardware and sanitizer checks remain explicit commands in [Verification](verification.md).
 
 ```sh
-lintian build/debian/mygoframe_0.1.3-1_amd64.changes
-apt-get -s install ./build/debian/mygoframe_0.1.3-1_amd64.deb
-dpkg-deb -I build/debian/mygoframe_0.1.3-1_amd64.deb
+package_version=$(python3 tools/version.py debian)
+architecture=$(dpkg --print-architecture)
+lintian "build/debian/mygoframe_${package_version}_${architecture}.changes"
+apt-get -s install "./build/debian/mygoframe_${package_version}_${architecture}.deb"
+dpkg-deb -I "build/debian/mygoframe_${package_version}_${architecture}.deb"
 ```
 
 The loader paths use executable-relative private directories. Package validation should extract and execute the `.deb` with `LD_LIBRARY_PATH` unset, check that all ELF dependencies resolve, and exercise the native window and capture window. The [Debian shared-library policy](https://www.debian.org/doc/debian-policy/ch-sharedlibs.html) distinguishes these private libraries from a public library ABI.
+
+Application and package numbers are managed through [Release version management](versioning.md). The packaging helper rejects version drift and preserves Git provenance for source-package rebuilds. Translation catalogs are embedded from `l10n/`; runtime translation files are not required.

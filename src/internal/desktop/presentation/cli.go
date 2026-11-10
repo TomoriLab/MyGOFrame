@@ -22,6 +22,9 @@ import (
 )
 
 func Run(services desktopapp.Services, prepareDesktop func(bool) error) error {
+	debugMode := flag.Bool("debug", false, "Override the GUI debug mode for this launch without changing the saved preference.")
+	showVersion := flag.Bool("version", false, "Show the application version and source revision without starting native services.")
+	versionJSON := flag.Bool("version-json", false, "Show release and build metadata as JSON without starting native services.")
 	list := flag.Bool("list", false, "List V4L2 video devices and PipeWire audio sources and outputs as JSON.")
 	probe := flag.String("probe", "", "List the supported video modes of a V4L2 device as JSON.")
 	video := flag.String("smoke-video", "", "Capture a V4L2 device without opening a window.")
@@ -44,6 +47,16 @@ func Run(services desktopapp.Services, prepareDesktop func(bool) error) error {
 	measureLatency := flag.Bool("measure-latency", false, "Measure capture-to-GPU-texture readiness with native completion fences.")
 	uiSeconds := flag.Float64("smoke-ui-seconds", 0, "Close the native window after this many seconds for a UI check.")
 	flag.Parse()
+	if *showVersion && *versionJSON {
+		return errors.New("--version and --version-json are mutually exclusive")
+	}
+	if *showVersion {
+		fmt.Println(services.BuildInformation.String())
+		return nil
+	}
+	if *versionJSON {
+		return writeJSON(services.BuildInformation)
+	}
 	if *backend != "auto" && *backend != "cpu" && *backend != "dma" {
 		return errors.New("--video-backend must be auto, cpu, or dma")
 	}
@@ -143,10 +156,16 @@ func Run(services desktopapp.Services, prepareDesktop func(bool) error) error {
 		return err
 	}
 
+	var debugOverride *bool
+	flag.Visit(func(option *flag.Flag) {
+		if option.Name == "debug" {
+			debugOverride = debugMode
+		}
+	})
 	return runWindow(services, time.Duration(*uiSeconds*float64(time.Second)), uiConfig, windowConfiguration{
 		width: *windowWidth, height: *windowHeight, pattern: *uiPattern, patternWidth: int(*width), patternHeight: int(*height),
 		captureWindow: *captureWindow, captureWindowCycles: *captureWindowCycles,
-		videoBackend: *backend,
+		videoBackend: *backend, debugOverride: debugOverride,
 	})
 }
 
@@ -284,6 +303,7 @@ func validatePreview(application *applicationState) error {
 }
 
 type windowConfiguration struct {
+	debugOverride               *bool
 	width, height               int
 	pattern                     bool
 	patternWidth, patternHeight int
@@ -297,7 +317,7 @@ func smokeWindowState(window *mygo.Window, role string) map[string]any {
 		return map[string]int{"x": rectangle.X, "y": rectangle.Y, "width": rectangle.Width, "height": rectangle.Height}
 	}
 	return map[string]any{
-		"role": role, "contextID": window.GPUContextID(),
+		"role": role, "contextID": window.GPUContextID(), "locale": mygo.App.Locale(),
 		"bounds": bounds(window.Bounds()), "contentBounds": bounds(window.ContentBounds()),
 		"visible": window.IsVisible(), "focused": window.IsFocused(),
 		"minimized": window.IsMinimized(), "fullscreen": window.IsFullScreen(),
@@ -305,6 +325,13 @@ func smokeWindowState(window *mygo.Window, role string) map[string]any {
 }
 
 func runWindow(services desktopapp.Services, closeAfter time.Duration, videoConfig *session.VideoConfig, config windowConfiguration) (result error) {
+	mygo.App.SetVersion(services.BuildInformation.Version)
+	if services.NewDiagnostics != nil {
+		services.Diagnostics = services.NewDiagnostics(config.debugOverride)
+	}
+	if services.Diagnostics != nil {
+		services.Diagnostics.Record("app.start", services.BuildInformation.String())
+	}
 	engine, err := services.NewEngine()
 	if err != nil {
 		return err
@@ -466,9 +493,12 @@ func runWindow(services desktopapp.Services, closeAfter time.Duration, videoConf
 	if previewError != nil {
 		return previewError
 	}
-	if videoConfig != nil || captureWindowCheck {
+	if videoConfig != nil || captureWindowCheck || (closeAfter > 0 && services.Diagnostics != nil && services.Diagnostics.Enabled()) {
 		if previewStatus == nil {
 			previewStatus = make(map[string]any)
+		}
+		if services.Diagnostics != nil && services.Diagnostics.Enabled() {
+			previewStatus["diagnostics"] = services.Diagnostics.Snapshot()
 		}
 		previewStatus["gpuContextRoles"] = contextRoles
 		previewStatus["windowObservations"] = windowObservations

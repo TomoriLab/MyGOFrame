@@ -95,7 +95,7 @@ func TestSettingsOrderToolbarGroupingAndThemeSwitch(t *testing.T) {
 		t.Fatal("redundant Sharing category remains")
 	}
 	previous := float32(-1)
-	for _, label := range []string{"Video settings", "Audio settings", "Recording settings", "Presets settings"} {
+	for _, label := range []string{"Video settings", "Audio settings", "Recording settings", "Presets settings", "Open app settings", "About settings"} {
 		bounds, found := tester.Find(label)
 		if !found || bounds.Y <= previous {
 			t.Fatalf("incorrect category order for %s", label)

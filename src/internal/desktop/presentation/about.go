@@ -1,7 +1,6 @@
 package presentation
 
 import (
-	"fmt"
 	"strings"
 
 	about "github.com/TomoriLab/MyGOFrame/src/internal/about/domain"
@@ -35,9 +34,9 @@ func (application *applicationState) aboutDialogs(context *ui.Context, width, he
 	ui.DialogBase(context.Key("about-modal"), &application.aboutOpen, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(0, 0, 0, .5))
 		panelWidth, panelHeight := modalSize(width, height, 760, 720)
-		panel.Column().Size(panelWidth, panelHeight).Background(palette.card).Border(1, palette.stroke).Radius(12).Label("About dialog").Children(func() {
+		panel.Column().Size(panelWidth, panelHeight).Background(palette.card).Border(1, palette.stroke).Radius(12).Label(text(context, "About dialog")).Children(func() {
 			modalHeader(context, "About MyGOFrame", "Close app information", func() { application.aboutOpen = false })
-			ui.Scroll(context.Key("about-scroll")).FillWidth().Grow(1).MinHeight(0).Label("About information").Children(func() {
+			ui.Scroll(context.Key("about-scroll")).FillWidth().Grow(1).MinHeight(0).Label(text(context, "About information")).Children(func() {
 				ui.Column(context).FillWidth().Padding(16).Gap(16).Children(func() { application.aboutContents(context) })
 			})
 		})
@@ -45,16 +44,16 @@ func (application *applicationState) aboutDialogs(context *ui.Context, width, he
 	ui.DialogBase(context.Key("license-modal"), &application.licenseOpen, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(0, 0, 0, .5))
 		panelWidth, panelHeight := modalSize(width, height, 860, 760)
-		panel.Column().Size(panelWidth, panelHeight).Background(palette.card).Border(1, palette.stroke).Radius(12).Label("License dialog").Children(func() {
-			modalHeader(context, application.licenseComponent.Name+" license", "Close license", func() { application.licenseOpen = false })
+		panel.Column().Size(panelWidth, panelHeight).Background(palette.card).Border(1, palette.stroke).Radius(12).Label(text(context, "License dialog")).Children(func() {
+			modalHeader(context, message(context, "{name} license", map[string]any{"name": application.licenseComponent.Name}), "Close license", func() { application.licenseOpen = false })
 			ui.Row(context).FillWidth().Shrink(0).Padding(0, 16, 8).Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Text(context, application.licenseComponent.License).Grow(1).MinWidth(0).FontSize(12).SingleLine().Tooltip(application.licenseComponent.License).TextColor(palette.theme.TextMuted)
+				ui.Text(context, text(context, application.licenseComponent.License)).Grow(1).MinWidth(0).FontSize(12).SingleLine().Tooltip(text(context, application.licenseComponent.License)).TextColor(palette.theme.TextMuted)
 				if application.licenseComponent.URL != "" {
-					ui.Link(context, "Upstream project", application.licenseComponent.URL).Shrink(0).FontSize(12).TextColor(aboutLinkColor(context.Theme().Dark))
+					ui.Link(context, text(context, "Upstream project"), application.licenseComponent.URL).Shrink(0).FontSize(12).TextColor(aboutLinkColor(context.Theme().Dark))
 				}
 			})
 			ui.Column(context).FillWidth().Grow(1).MinHeight(0).Padding(0, 16).Children(func() {
-				reader := ui.TextArea(context.Key(application.licenseComponent.ID), &application.licenseBody).FillWidth().Grow(1).MinWidth(0).MinHeight(0).ReadOnly(true).Font("monospace").FontSize(12).Label("License text")
+				reader := ui.TextArea(context.Key(application.licenseComponent.ID), &application.licenseBody).FillWidth().Grow(1).MinWidth(0).MinHeight(0).ReadOnly(true).Font("monospace").FontSize(12).Label(text(context, "License text"))
 				if application.licenseNeedsReset {
 					// A notice starts at its first line instead of the text editor's default end position.
 					reader.SetTextSelection(0, 0)
@@ -62,7 +61,7 @@ func (application *applicationState) aboutDialogs(context *ui.Context, width, he
 				}
 			})
 			ui.Row(context).FillWidth().Shrink(0).Padding(8, 16).Justify(ui.End).Children(func() {
-				if ui.Button(context.Key("copy-license"), "Copy license text").Clicked() {
+				if ui.Button(context.Key("copy-license"), text(context, "Copy license text")).Clicked() {
 					context.WriteClipboard(application.licenseBody)
 				}
 			})
@@ -82,8 +81,8 @@ func aboutLinkColor(dark bool) ui.Color {
 
 func modalHeader(context *ui.Context, title, closeLabel string, closeAction func()) {
 	ui.Row(context).FillWidth().Shrink(0).Padding(12, 16).Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(context, title).Grow(1).MinWidth(0).FontSize(18).FontWeight(600).SingleLine()
-		if ui.Button(context.Key(closeLabel), "Close").Shrink(0).Label(closeLabel).Clicked() {
+		ui.Text(context, text(context, title)).Grow(1).MinWidth(0).FontSize(18).FontWeight(600).SingleLine()
+		if ui.Button(context.Key(closeLabel), text(context, "Close")).Shrink(0).Label(text(context, closeLabel)).Clicked() {
 			closeAction()
 		}
 	})
@@ -91,7 +90,7 @@ func modalHeader(context *ui.Context, title, closeLabel string, closeAction func
 
 func (application *applicationState) aboutContents(context *ui.Context) {
 	if application.aboutError != nil {
-		ui.Text(context, application.aboutError.Error()).FillWidth().TextColor(context.Theme().Danger)
+		ui.Text(context, text(context, application.aboutError.Error())).FillWidth().TextColor(context.Theme().Danger)
 		return
 	}
 	catalog := application.aboutCatalog
@@ -102,54 +101,62 @@ func (application *applicationState) aboutContents(context *ui.Context) {
 		ui.Image(context, applicationBranding().logo).Size(48, 48).Radius(10).Clip()
 		ui.Column(context).Grow(1).MinWidth(0).Gap(4).Children(func() {
 			ui.Text(context, "MyGOFrame").FontSize(22).FontWeight(600)
-			ui.Text(context, "Version "+catalog.Version).FillWidth().FontSize(13)
+			ui.Text(context, text(context, message(context, "Version {version}", map[string]any{"version": catalog.Version}))).FillWidth().FontSize(13)
+			if catalog.DebianVersion != "" {
+				helpText(context, message(context, "Package version {version}", map[string]any{"version": catalog.DebianVersion}))
+			}
 			if catalog.Revision != "" {
-				revision := "Build " + catalog.Revision
+				modified := ""
 				if catalog.Modified {
-					revision += " (modified)"
+					modified = text(context, " (modified)")
 				}
+				sourceRevision := catalog.Revision
+				if len(sourceRevision) > 12 {
+					sourceRevision = sourceRevision[:12]
+				}
+				revision := message(context, "Build {revision}{modified}", map[string]any{"revision": sourceRevision, "modified": modified})
 				helpText(context, revision)
 			}
 		})
 	})
 	helpText(context, "Low-latency capture-card video, audio monitoring, and recording.")
 	ui.Column(context).FillWidth().Gap(6).Children(func() {
-		ui.Text(context, "Developer").FontSize(16).FontWeight(600)
-		ui.Text(context, catalog.Developer+" / "+catalog.Organization).FillWidth().FontSize(14).Selectable()
-		ui.Link(context, catalog.Contact, "mailto:"+catalog.Contact).FontSize(13).TextColor(aboutLinkColor(context.Theme().Dark))
-		ui.Link(context, "Project and source code", catalog.ProjectURL).FontSize(13).TextColor(aboutLinkColor(context.Theme().Dark))
+		ui.Text(context, text(context, "Developer")).FontSize(16).FontWeight(600)
+		ui.Text(context, text(context, catalog.Developer+" / "+catalog.Organization)).FillWidth().FontSize(14).Selectable()
+		ui.Link(context, text(context, catalog.Contact), "mailto:"+catalog.Contact).FontSize(13).TextColor(aboutLinkColor(context.Theme().Dark))
+		ui.Link(context, text(context, "Project and source code"), catalog.ProjectURL).FontSize(13).TextColor(aboutLinkColor(context.Theme().Dark))
 	})
 	ui.Row(context).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(context, "Application license: MIT").Grow(1).MinWidth(0).FontSize(13)
-		if ui.Button(context.Key("application-license"), "View license").Label("View MyGOFrame license").Clicked() {
+		ui.Text(context, text(context, "Application license: MIT")).Grow(1).MinWidth(0).FontSize(13)
+		if ui.Button(context.Key("application-license"), text(context, "View license")).Label(text(context, "View MyGOFrame license")).Clicked() {
 			application.showComponentLicense(catalog.Components[0])
 		}
 	})
 	ui.Divider(context).FillWidth()
-	ui.Text(context, "Open source and runtime notices").FontSize(16).FontWeight(600)
-	helpText(context, fmt.Sprintf("%d components. Bundled and system-linked components retain their own terms.", len(catalog.Components)-1))
-	ui.TextInput(context.Key("license-search"), &application.licenseSearch).FillWidth().Placeholder("Search component or license").Label("Search licenses")
+	ui.Text(context, text(context, "Open source and runtime notices")).FontSize(16).FontWeight(600)
+	helpText(context, message(context, "{count, plural, one {# component.} other {# components.}} Bundled and system-linked components retain their own terms.", map[string]any{"count": len(catalog.Components) - 1}))
+	ui.TextInput(context.Key("license-search"), &application.licenseSearch).FillWidth().Placeholder(text(context, "Search component or license")).Label(text(context, "Search licenses"))
 	query := strings.ToLower(strings.TrimSpace(application.licenseSearch))
 	matches := 0
 	for _, component := range catalog.Components {
 		if component.ID == "mygoframe" {
 			continue
 		}
-		if query != "" && !strings.Contains(strings.ToLower(component.Name+" "+component.License+" "+component.Scope), query) {
+		if query != "" && !strings.Contains(strings.ToLower(component.Name+" "+component.License+" "+component.Scope+" "+text(context, component.Scope)), query) {
 			continue
 		}
 		matches++
 		entry := component
-		button := ui.ButtonBase(context.Key(entry.ID)).FillWidth().MinWidth(0).Shrink(0).Padding(12).Background(context.Theme().SurfaceHover).Border(1, context.Theme().Border).Radius(6).Label("License for " + entry.Name)
+		button := ui.ButtonBase(context.Key(entry.ID)).FillWidth().MinWidth(0).Shrink(0).Padding(12).Background(context.Theme().SurfaceHover).Border(1, context.Theme().Border).Radius(6).Label(message(context, "License for {name}", map[string]any{"name": entry.Name}))
 		if button.Clicked() {
 			application.showComponentLicense(entry)
 		}
 		button.Children(func() {
 			ui.Column(context).FillWidth().MinWidth(0).Gap(4).Children(func() {
-				ui.Text(context, entry.Name).FillWidth().MinWidth(0).FontSize(14).FontWeight(600)
-				helpText(context, entry.Version+" · "+entry.Scope)
+				ui.Text(context, text(context, entry.Name)).FillWidth().MinWidth(0).FontSize(14).FontWeight(600)
+				helpText(context, entry.Version+" · "+text(context, entry.Scope))
 				helpText(context, entry.License)
-				ui.Text(context, "View license ›").FontSize(12).TextColor(aboutLinkColor(context.Theme().Dark))
+				ui.Text(context, text(context, "View license ›")).FontSize(12).TextColor(aboutLinkColor(context.Theme().Dark))
 			})
 		})
 	}

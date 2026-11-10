@@ -27,6 +27,7 @@ func (application *applicationState) openPresentation() {
 	}
 	presentation := &presentationWindow{application: application}
 	application.presentation = presentation
+	application.debugEvent("capture-window.opened", "")
 	// A separate top-level window remains visible when the controls are minimized.
 	window := mygo.NewWindow(mygo.WindowOptions{
 		Title: captureWindowTitle, Width: 960, Height: 540, UseContentSize: true,
@@ -44,6 +45,7 @@ func (application *applicationState) openPresentation() {
 		}
 		if application.presentation == presentation {
 			application.presentation = nil
+			application.debugEvent("capture-window.closed", "")
 		}
 		if !application.closing && application.window != nil {
 			application.window.Invalidate()
@@ -60,6 +62,7 @@ func (application *applicationState) closePresentation() {
 		return
 	}
 	application.presentation = nil
+	application.debugEvent("capture-window.closed", "")
 	if application.worker != nil {
 		application.worker.presentation.CompareAndSwap(presentation.window, nil)
 	}
@@ -91,7 +94,7 @@ func (presentation *presentationWindow) view(context *ui.Context) {
 		presentation.setFullscreen(false)
 	}
 	// Both native views use the same main-thread bitmap and its single pinned frame lease.
-	ui.Box(context).Fill().MinWidth(0).MinHeight(0).Background(ui.RGB(0, 0, 0)).Clip().Label("Capture window viewport").Draw(func(painter *ui.Painter, bounds ui.Rect) {
+	ui.Box(context).Fill().MinWidth(0).MinHeight(0).Background(ui.RGB(0, 0, 0)).Clip().Label(text(context, "Capture window viewport")).Draw(func(painter *ui.Painter, bounds ui.Rect) {
 		presentation.renderCount++
 		presentation.displayedBitmap = false
 		presentation.displayedSequence = 0

@@ -1,6 +1,6 @@
 # MyGOFrame
 
-MyGOFrame is a Linux capture-card viewer for playing console games through a capture preview. Its [MyGo native UI](https://mygo.egoist.dev/docs/ui) follows Fluent 2-inspired styling and the system's light or dark appearance. The settings overview opens Video, Audio, Recording, and Presets detail pages.
+MyGOFrame is a Linux capture-card viewer for playing console games through a capture preview. Its [MyGo native UI](https://mygo.egoist.dev/docs/ui) follows Fluent 2-inspired styling and the system's light or dark appearance. The settings overview opens Video, Audio, Recording, Presets, and App settings detail pages.
 
 ## Features
 
@@ -17,6 +17,8 @@ MyGOFrame is a Linux capture-card viewer for playing console games through a cap
 - Open a separate video-only window for Discord or other window-sharing applications.
 - Switch between light and dark themes with the sun/moon button in the settings header.
 - Open app and developer information below Presets, with searchable offline dependency notices and full licenses in separate dialogs.
+- Enable bounded session diagnostics and copy a report from App settings.
+- Use English, Korean, or Japanese through **Settings → App settings → Language**.
 - Enter fullscreen with F11. Escape returns to the controls.
 
 Supported video formats are YUYV, UYVY, NV12, P010, BGR24, RGB24, and MJPEG. The UI lists combinations reported by the device that the core can decode. Video capture uses the V4L2 single-planar streaming API. Multi-planar-only devices, interlaced capture, and other compressed codecs are not supported.
@@ -38,7 +40,8 @@ The Linux backends are NVIDIA NVENC, Intel QSV, and AMD VA-API on supporting dev
 A local Debian sid amd64 package can be built with `make deb`. Install the result with:
 
 ```sh
-sudo apt install ./build/debian/mygoframe_0.1.3-1_amd64.deb
+package_version=$(python3 tools/version.py debian)
+sudo apt install "./build/debian/mygoframe_${package_version}_$(dpkg --print-architecture).deb"
 ```
 
 The package includes the Swift runtime and installs a desktop launcher. Build requirements, source rebuilding, and verification are documented in [Debian packaging](docs/debian.md).
@@ -84,6 +87,22 @@ Select the capture device and video settings, then start the preview. Select the
 
 The preview scales to the available space and adds black borders when the window and video have different aspect ratios. Capture resolution does not determine the minimum window size. Windows smaller than 800 logical pixels wide or 480 pixels high move the controls into a scrollable **Settings** dialog so the sidebar cannot consume the video viewport. The minimum window content size is 320 × 240. Use `--window-width` and `--window-height` to select the initial size.
 
+## App language
+
+Open **Settings → App settings → Language** to select English, 한국어, or 日本語. The choice applies immediately to both windows and is saved for the next launch. **System language** resumes automatic selection. Unsupported languages fall back to English. Preset names and device identities are preserved when switching languages.
+
+For a single launch without changing the saved choice:
+
+```sh
+MYGO_LOCALE=ko ./build/mygoframe
+```
+
+## Debug mode
+
+Open **Settings → App settings → Debug mode** to enable or disable diagnostic history. The preference is saved. **Copy diagnostic report** copies build information, session state, and recent events as JSON. **Clear diagnostic history** removes retained events. History stays in memory and is discarded when the application exits. Debug mode does not add per-frame logging or change capture settings.
+
+Use `./build/mygoframe --debug` for one launch or `--debug=false` to override a saved enabled preference. See [Debug mode](docs/debugging.md) for event bounds, preference handling, and validation.
+
 ## Settings presets
 
 Open **Settings → Presets**, enter a name, and select **Save new preset**. Presets store the selected video device and exact mode, color range, processing backend, audio source and output, volume, mute, and whether the capture window is open. **Update preset** replaces the selected preset with the current settings. **Delete preset** asks for confirmation.
@@ -94,7 +113,7 @@ Presets are stored in `$XDG_CONFIG_HOME/mygoframe/presets.json`, or `~/.config/m
 
 ## App information and licenses
 
-Open **Settings → About**, immediately below Presets. The native dialog shows the application version, developer, contact address, source repository, and application MIT license. Search the component list by name or license and select a component to open its full notices in another dialog. License text supports selection, scrolling, and copying. Escape closes the top dialog and returns to the previous one.
+Open **Settings → About**, immediately below App settings. The native dialog shows the application version, developer, contact address, source repository, and application MIT license. Search the component list by name or license and select a component to open its full notices in another dialog. License text supports selection, scrolling, and copying. Escape closes the top dialog and returns to the previous one.
 
 Notices are embedded when the application is built and remain readable offline. They cover Go modules, language runtimes, the private native runtime, and system libraries found on the build machine. System versions describe that build snapshot; optional vendor runtimes keep their own terms. The [catalog documentation](docs/about-and-licenses.md) describes notice sources and regeneration.
 
@@ -126,7 +145,7 @@ Color range controls how captured samples are interpreted. Automatic mode uses n
 
 ## Development documentation
 
-Architecture, memory ownership, verification commands, and agent guidance are in [docs/](docs/README.md).
+Architecture, memory ownership, verification commands, and agent guidance are in [docs/](docs/README.md). See [Localization](docs/l10n.md) to add a language and [Release version management](docs/versioning.md) to update the application and package versions from `version.json`. Use `./build/mygoframe --version` or `--version-json` to inspect a build.
 
 ## License
 

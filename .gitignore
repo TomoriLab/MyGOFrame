@@ -16,3 +16,7 @@ __pycache__/
 
 /src/internal/about/infrastructure/notices/catalog_generated.go
 /src/internal/about/infrastructure/notices/catalog_generated.go.new
+/src/internal/desktop/presentation/localization/catalogs_generated/
+/src/internal/version/domain/version_generated.go
+/src/internal/version/domain/version_generated.go.new
+/build-source.json

@@ -1,6 +1,7 @@
 package presentation
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/TomoriLab/MyGOFrame/src/internal/desktop/domain/branding"
@@ -56,37 +57,37 @@ func (application *applicationState) commandBar(context *ui.Context, compact boo
 	appearance := fluentAppearance(context.Theme().Dark)
 	ui.Row(context).FillWidth().Shrink(0).Padding(12, 16).Gap(8).AlignItems(ui.Center).Children(func() {
 		if !compact {
-			ui.Image(context, applicationBranding().logo).Size(40, 40).Fit(ui.Contain).Radius(40 * branding.CornerRadiusRatio).Clip().Label("MyGOFrame logo")
+			ui.Image(context, applicationBranding().logo).Size(40, 40).Fit(ui.Contain).Radius(40 * branding.CornerRadiusRatio).Clip().Label(text(context, "MyGOFrame logo"))
 		}
 		ui.Column(context).Grow(1).MinWidth(0).Gap(2).Children(func() {
 			ui.Text(context, "MyGOFrame").FillWidth().FontSize(20).FontWeight(600).SingleLine()
 			if !compact {
-				ui.Text(context, "Capture viewer").FontSize(12).TextColor(appearance.theme.TextMuted)
+				ui.Text(context, text(context, "Capture viewer")).FontSize(12).TextColor(appearance.theme.TextMuted)
 			}
 		})
 		if !compact && width >= 1120 && len(application.presets) > 0 {
 			application.quickPresetControls(context, 200, true, 8, false)
 		}
 		if compact {
-			if ui.Button(context.Key("settings"), "Settings").Clicked() {
+			if ui.Button(context.Key("settings"), text(context, "Settings")).Clicked() {
 				application.settingsOpen = true
 			}
 		}
-		ui.Row(context).Shrink(0).Gap(4).AlignItems(ui.Center).Label("Window actions").Children(func() {
+		ui.Row(context).Shrink(0).Gap(4).AlignItems(ui.Center).Label(text(context, "Window actions")).Children(func() {
 			if compact {
-				button := ui.ButtonBase(context.Key("capture-window")).Size(28, 32).Label("Capture window").Tooltip("Open the video-only capture window")
+				button := ui.ButtonBase(context.Key("capture-window")).Size(28, 32).Label(text(context, "Capture window")).Tooltip(text(context, "Open the video-only capture window"))
 				button.Draw(func(painter *ui.Painter, bounds ui.Rect) { drawSettingsIcon(painter, bounds, 0, appearance.theme.Text) })
 				if button.Clicked() {
 					application.openPresentation()
 				}
-			} else if ui.Button(context.Key("capture-window"), "Capture window").Label("Open capture window action").Tooltip("Open a separate video-only window for screen sharing").Clicked() {
+			} else if ui.Button(context.Key("capture-window"), text(context, "Capture window")).Label(text(context, "Open capture window action")).Tooltip(text(context, "Open a separate video-only window for screen sharing")).Clicked() {
 				application.openPresentation()
 			}
 			fullscreenLabel := "Fullscreen · F11"
 			if compact {
 				fullscreenLabel = "F11"
 			}
-			if ui.Button(context.Key("fullscreen"), fullscreenLabel).Label("Fullscreen action").Tooltip("Show the preview fullscreen").Clicked() {
+			if ui.Button(context.Key("fullscreen"), text(context, fullscreenLabel)).Label(text(context, "Fullscreen action")).Tooltip(text(context, "Show the preview fullscreen")).Clicked() {
 				application.setFullscreen(true)
 			}
 		})
@@ -105,7 +106,7 @@ func (application *applicationState) recordingCommandButton(context *ui.Context,
 	disabled := application.busy || application.recordingProbeBusy || application.status.Recording.Phase == "stopping" || (!application.running && !application.status.Recording.Active())
 	var button ui.Element
 	if compact {
-		button = ui.ButtonBase(context.Key("record-toggle")).Size(28, 32).Label(label).Tooltip(label).Disabled(disabled)
+		button = ui.ButtonBase(context.Key("record-toggle")).Size(28, 32).Label(text(context, label)).Tooltip(text(context, label)).Disabled(disabled)
 		button.Draw(func(painter *ui.Painter, bounds ui.Rect) {
 			color := appearance.theme.Danger
 			if disabled {
@@ -118,7 +119,7 @@ func (application *applicationState) recordingCommandButton(context *ui.Context,
 			painter.Fill(ui.Rect{X: bounds.X + (bounds.W-12)/2, Y: bounds.Y + (bounds.H-12)/2, W: 12, H: 12}, color, radius)
 		})
 	} else {
-		button = ui.Button(context.Key("record-toggle"), label).Size(128, 32).Label("Recording action").Disabled(disabled)
+		button = ui.Button(context.Key("record-toggle"), text(context, label)).Size(128, 32).Label(text(context, "Recording action")).Disabled(disabled)
 	}
 	if button.Clicked() {
 		if application.status.Recording.Active() {
@@ -135,7 +136,7 @@ func (application *applicationState) themeSwitch(context *ui.Context) {
 	if application.darkTheme {
 		tooltip = "Use light theme"
 	}
-	button := ui.ToggleBase(context.Key("theme-switch"), &application.darkTheme).Size(32, 32).Shrink(0).Radius(6).Label("Theme switch").Tooltip(tooltip)
+	button := ui.ToggleBase(context.Key("theme-switch"), &application.darkTheme).Size(32, 32).Shrink(0).Radius(6).Label(text(context, "Theme switch")).Tooltip(text(context, tooltip))
 	background := palette.card
 	if button.Hovered() {
 		background = palette.theme.SurfaceHover
@@ -171,7 +172,7 @@ func (application *applicationState) captureStatus(context *ui.Context, appearan
 	}
 	ui.Row(context).Padding(4, 8).Gap(6).Radius(4).Background(background).AlignItems(ui.Center).Children(func() {
 		ui.Box(context).Size(6, 6).Radius(3).Background(foreground)
-		ui.Text(context, label).FontSize(12).FontWeight(600).TextColor(foreground)
+		ui.Text(context, text(context, label)).FontSize(12).FontWeight(600).TextColor(foreground)
 	})
 }
 
@@ -180,35 +181,39 @@ func (application *applicationState) previewStatus(context *ui.Context, compact 
 	if compact {
 		maximumHeight = min(float32(60), height/4)
 	}
-	ui.Scroll(context).FillWidth().Shrink(0).MaxHeight(max(28, maximumHeight)).Label("Capture status").Children(func() {
+	ui.Scroll(context).FillWidth().Shrink(0).MaxHeight(max(28, maximumHeight)).Label(text(context, "Capture status")).Children(func() {
 		ui.Column(context).FillWidth().Padding(8, 12).Gap(4).Children(func() {
-			if description := actualVideoSummary(application.status); description != "" && !compact {
-				ui.Text(context, description).FontSize(14).FontWeight(600)
+			if description := actualVideoSummary(application.status, context); description != "" && !compact {
+				ui.Text(context, text(context, description)).FontSize(14).FontWeight(600)
 			}
-			summary := statusSummary(application.status)
+			summary := statusSummary(application.status, context)
 			if application.status.Recording.Active() || application.status.Recording.Phase == "failed" {
-				summary = recordingSummary(application.status.Recording)
+				summary = recordingSummary(application.status.Recording, context)
 			}
-			ui.Text(context, summary).FontSize(12).TextColor(appearance.theme.TextMuted)
+			ui.Text(context, text(context, summary)).FontSize(12).TextColor(appearance.theme.TextMuted)
 			if application.status.FallbackReason != "" {
-				ui.Text(context, "GPU video unavailable; using CPU processing.").FontSize(12).TextColor(appearance.theme.TextMuted)
+				ui.Text(context, text(context, "GPU video unavailable; using CPU processing.")).FontSize(12).TextColor(appearance.theme.TextMuted)
 			}
 			if application.notice != "" {
-				ui.Text(context, application.notice).FontSize(12).TextColor(appearance.theme.TextMuted)
+				ui.Text(context, text(context, application.notice)).FontSize(12).TextColor(appearance.theme.TextMuted)
 			}
 			if application.errorMessage != "" {
-				ui.Text(context, application.errorMessage).FontSize(12).TextColor(appearance.theme.Danger)
+				ui.Text(context, text(context, application.errorMessage)).FontSize(12).TextColor(appearance.theme.Danger)
 			}
 		})
 	})
 }
 
-var settingsCategories = []struct{ title, description string }{
-	{"Video", "Capture device, format, and picture"},
-	{"Audio", "Capture sound and speaker monitoring"},
-	{"Recording", "GPU, codec, and recording quality"},
-	{"Presets", "Save and restore your settings"},
-	{"About", "App, developer, and open-source licenses"},
+var settingsCategories = []struct {
+	title, description string
+	icon               int
+}{
+	{"Video", "Capture device, format, and picture", 0},
+	{"Audio", "Capture sound and speaker monitoring", 1},
+	{"Recording", "GPU, codec, and recording quality", 2},
+	{"Presets", "Save and restore your settings", 3},
+	{"App settings", "Language and debugging", 5},
+	{"About", "App, developer, and open-source licenses", 4},
 }
 
 func (application *applicationState) settingsBody(context *ui.Context) {
@@ -217,17 +222,17 @@ func (application *applicationState) settingsBody(context *ui.Context) {
 		return
 	}
 	ui.Row(context).FillWidth().Shrink(0).Padding(0, 16, 8).Gap(8).AlignItems(ui.Center).Children(func() {
-		back := ui.ButtonBase(context.Key("settings-back")).Size(28, 32).Shrink(0).Radius(4).Label("Back to settings").Tooltip("Back to settings")
+		back := ui.ButtonBase(context.Key("settings-back")).Size(28, 32).Shrink(0).Radius(4).Label(text(context, "Back to settings")).Tooltip(text(context, "Back to settings"))
 		back.Justify(ui.Center).AlignItems(ui.Center).Children(func() { ui.Text(context, "‹").FontSize(24).TextColor(context.Theme().Text) })
 		if back.Clicked() {
 			application.settingsPage = -1
 		}
-		ui.Text(context, settingsCategories[max(0, application.settingsPage)].title).FontSize(16).FontWeight(600)
+		ui.Text(context, text(context, settingsCategories[max(0, application.settingsPage)].title)).FontSize(16).FontWeight(600)
 	})
 	if application.settingsPage < 0 {
 		return
 	}
-	ui.Scroll(context).FillWidth().Grow(1).MinHeight(0).Children(func() {
+	ui.Scroll(context).FillWidth().Grow(1).MinHeight(0).Label(text(context, "Settings detail")).Children(func() {
 		ui.Column(context).FillWidth().Padding(8, 16, 16).Gap(16).Children(func() {
 			switch application.settingsPage {
 			case 1:
@@ -236,6 +241,8 @@ func (application *applicationState) settingsBody(context *ui.Context) {
 				application.recordingControls(context)
 			case 3:
 				application.presetControls(context)
+			case 4:
+				application.appSettingsControls(context)
 			default:
 				application.videoControls(context)
 			}
@@ -249,10 +256,14 @@ func (application *applicationState) settingsOverview(context *ui.Context) {
 	if context.Theme().Dark {
 		iconColor = ui.Hex("#479ef5")
 	}
-	ui.Scroll(context.Key("settings-overview")).FillWidth().Grow(1).MinHeight(0).Label("Settings overview").Children(func() {
+	ui.Scroll(context.Key("settings-overview")).FillWidth().Grow(1).MinHeight(0).Label(text(context, "Settings overview")).Children(func() {
 		ui.Column(context).FillWidth().Padding(0, 12, 12).Gap(8).Children(func() {
 			for index, category := range settingsCategories {
-				button := ui.ButtonBase(context.Key(category.title)).FillWidth().MinWidth(0).Shrink(0).Height(76).Padding(12).Gap(12).AlignItems(ui.Center).Background(palette.card).Border(1, palette.stroke).Radius(6).Label(category.title + " settings")
+				label := category.title + " settings"
+				if category.title == "App settings" {
+					label = "Open app settings"
+				}
+				button := ui.ButtonBase(context.Key(category.title)).FillWidth().MinWidth(0).Shrink(0).MinHeight(76).Padding(12).Gap(12).AlignItems(ui.Center).Background(palette.card).Border(1, palette.stroke).Radius(6).Label(text(context, label))
 				if button.Hovered() {
 					button.Background(palette.theme.SurfaceHover)
 				}
@@ -265,11 +276,11 @@ func (application *applicationState) settingsOverview(context *ui.Context) {
 				}
 				button.Children(func() {
 					ui.Box(context).Size(28, 28).Shrink(0).Draw(func(painter *ui.Painter, bounds ui.Rect) {
-						drawSettingsIcon(painter, bounds, index, iconColor)
+						drawSettingsIcon(painter, bounds, category.icon, iconColor)
 					})
 					ui.Column(context).Grow(1).MinWidth(0).Gap(4).Children(func() {
-						ui.Text(context, category.title).FontSize(14).FontWeight(600)
-						ui.Text(context, category.description).FillWidth().FontSize(12).TextColor(palette.theme.TextMuted)
+						ui.Text(context, text(context, category.title)).FontSize(14).FontWeight(600)
+						ui.Text(context, text(context, category.description)).FillWidth().FontSize(12).TextColor(palette.theme.TextMuted)
 					})
 					ui.Text(context, "›").FontSize(20).TextColor(palette.theme.TextMuted).Width(12).Shrink(0).TextAlign(ui.Center)
 				})
@@ -301,6 +312,14 @@ func drawSettingsIcon(painter *ui.Painter, bounds ui.Rect, index int, color ui.C
 		painter.Stroke(ui.Rect{X: x, Y: y, W: 20, H: 20}, color, 10, 1.5)
 		painter.Fill(ui.Rect{X: x + 9, Y: y + 4, W: 2, H: 2}, color, 1)
 		painter.Line(x+10, y+9, x+10, y+16, 1.5, color)
+	case 5:
+		painter.Stroke(ui.Rect{X: x + 3, Y: y + 3, W: 14, H: 14}, color, 7, 1.5)
+		painter.Stroke(ui.Rect{X: x + 7, Y: y + 7, W: 6, H: 6}, color, 3, 1.5)
+		for index := 0; index < 8; index++ {
+			angle := float64(index) * math.Pi / 4
+			horizontal, vertical := float32(math.Cos(angle)), float32(math.Sin(angle))
+			painter.Line(x+10+horizontal*8, y+10+vertical*8, x+10+horizontal*11, y+10+vertical*11, 2, color)
+		}
 	case 2:
 		painter.Stroke(ui.Rect{X: x, Y: y, W: 20, H: 20}, color, 10, 1.5)
 		painter.Fill(ui.Rect{X: x + 6, Y: y + 6, W: 8, H: 8}, color, 4)
@@ -309,19 +328,19 @@ func drawSettingsIcon(painter *ui.Painter, bounds ui.Rect, index int, color ui.C
 
 func field(context *ui.Context, label string, control func()) {
 	ui.Column(context).FillWidth().Gap(4).Children(func() {
-		ui.Text(context, label).FontSize(12).FontWeight(600)
+		ui.Text(context, text(context, label)).FontSize(12).FontWeight(600)
 		control()
 	})
 }
 
-func helpText(context *ui.Context, text string) {
-	ui.Text(context, text).FillWidth().MinWidth(0).FontSize(12).TextColor(context.Theme().TextMuted)
+func helpText(context *ui.Context, value string) {
+	ui.Text(context, text(context, value)).FillWidth().MinWidth(0).FontSize(12).TextColor(context.Theme().TextMuted)
 }
 
 func (application *applicationState) videoControls(context *ui.Context) {
 	disabled := application.busy || application.running
 	ui.Column(context).FillWidth().Gap(4).Children(func() {
-		ui.Text(context, "Video input").FontSize(16).FontWeight(600)
+		ui.Text(context, text(context, "Video input")).FontSize(16).FontWeight(600)
 		helpText(context, "Choose the signal from your capture card.")
 	})
 	deviceLabels := make([]string, 0, len(application.devices))
@@ -329,7 +348,7 @@ func (application *applicationState) videoControls(context *ui.Context) {
 		deviceLabels = append(deviceLabels, videoLabel(device))
 	}
 	field(context, "Capture device", func() {
-		if ui.Select(context.Key("video-device"), &application.device, deviceLabels).FillWidth().Label("Capture device").Disabled(disabled || len(deviceLabels) == 0).Changed() {
+		if ui.Select(context.Key("video-device"), &application.device, deviceLabels).FillWidth().Label(text(context, "Capture device")).Disabled(disabled || len(deviceLabels) == 0).Changed() {
 			application.loadModes()
 		}
 	})
@@ -337,29 +356,29 @@ func (application *applicationState) videoControls(context *ui.Context) {
 		helpText(context, "No capture device found. Connect a device and refresh.")
 	}
 	field(context, "Video format", func() {
-		if ui.Select(context.Key("video-format"), &application.selection.format, application.selection.formats()).FillWidth().Label("Video format").Disabled(disabled).Changed() {
+		if ui.Select(context.Key("video-format"), &application.selection.format, application.selection.formats()).FillWidth().Label(text(context, "Video format")).Disabled(disabled).Changed() {
 			application.selection.reconcile()
 		}
 	})
 	field(context, "Resolution", func() {
-		if ui.Select(context.Key("video-resolution"), &application.selection.resolution, application.selection.resolutions()).FillWidth().Label("Resolution").Disabled(disabled).Changed() {
+		if ui.Select(context.Key("video-resolution"), &application.selection.resolution, application.selection.resolutions()).FillWidth().Label(text(context, "Resolution")).Disabled(disabled).Changed() {
 			application.selection.reconcile()
 		}
 	})
 	field(context, "Frame rate", func() {
-		ui.Select(context.Key("video-frame-rate"), &application.selection.frameRate, application.selection.frameRates()).FillWidth().Label("Frame rate").Disabled(disabled)
+		ui.Select(context.Key("video-frame-rate"), &application.selection.frameRate, application.selection.frameRates()).FillWidth().Label(text(context, "Frame rate")).Disabled(disabled)
 	})
 	field(context, "Color range", func() {
-		ui.Select(context.Key("video-range"), &application.colorRange, []string{"Auto", "Limited", "Full"}).FillWidth().Label("Color range").Disabled(disabled)
+		localizedSelect(context.Key("video-range"), &application.colorRange, []string{"Auto", "Limited", "Full"}).FillWidth().Label(text(context, "Color range")).Disabled(disabled)
 	})
 	if application.running {
-		if ui.Button(context.Key("stop-video"), "Stop video").FillWidth().Disabled(application.busy).Clicked() {
+		if ui.Button(context.Key("stop-video"), text(context, "Stop video")).FillWidth().Disabled(application.busy).Clicked() {
 			application.stopVideo()
 		}
 		helpText(context, "Stop video to change the capture settings.")
 	} else {
 		_, valid := application.selection.selected()
-		if ui.PrimaryButton(context.Key("start-video"), "Start video").FillWidth().Disabled(application.busy || !valid).Clicked() {
+		if ui.PrimaryButton(context.Key("start-video"), text(context, "Start video")).FillWidth().Disabled(application.busy || !valid).Clicked() {
 			application.startVideo()
 		}
 	}
@@ -367,7 +386,7 @@ func (application *applicationState) videoControls(context *ui.Context) {
 
 func (application *applicationState) audioControls(context *ui.Context) {
 	ui.Column(context).FillWidth().Gap(4).Children(func() {
-		ui.Text(context, "Audio monitoring").FontSize(16).FontWeight(600)
+		ui.Text(context, text(context, "Audio monitoring")).FontSize(16).FontWeight(600)
 		helpText(context, "Listen to your capture card through a speaker or headset.")
 	})
 	sourceLabels, outputLabels := []string{audioOff}, []string{defaultOutput}
@@ -378,28 +397,28 @@ func (application *applicationState) audioControls(context *ui.Context) {
 		outputLabels = append(outputLabels, audioLabel(device))
 	}
 	field(context, "Capture audio", func() {
-		if ui.Select(context.Key("audio-source"), &application.audioSource, sourceLabels).FillWidth().Label("Capture audio").Disabled(application.busy || application.status.Recording.Active()).Changed() {
+		if localizedSelect(context.Key("audio-source"), &application.audioSource, sourceLabels).FillWidth().Label(text(context, "Capture audio")).Disabled(application.busy || application.status.Recording.Active()).Changed() {
 			application.changeAudio()
 		}
 	})
 	field(context, "Speaker output", func() {
-		if ui.Select(context.Key("audio-output"), &application.audioOutput, outputLabels).FillWidth().Label("Speaker output").Disabled(application.busy).Changed() {
+		if localizedSelect(context.Key("audio-output"), &application.audioOutput, outputLabels).FillWidth().Label(text(context, "Speaker output")).Disabled(application.busy).Changed() {
 			application.changeAudio()
 		}
 	})
-	ui.Textf(context, "Input level %.0f%%", application.status.Audio.InputPeak*100).FontSize(12)
-	if ui.Checkbox(context.Key("monitor-audio"), &application.monitorAudio, "Monitor audio").Disabled(application.busy).Changed() {
+	ui.Text(context, message(context, "Input level {level}%", map[string]any{"level": fmt.Sprintf("%.0f", application.status.Audio.InputPeak*100)})).FontSize(12)
+	if ui.Checkbox(context.Key("monitor-audio"), &application.monitorAudio, text(context, "Monitor audio")).Disabled(application.busy).Changed() {
 		application.changeMonitoring()
 	}
 	helpText(context, "The capture-card input is also used for recording. Monitor volume and mute do not affect the recorded level.")
 	ui.Column(context).FillWidth().Gap(8).Children(func() {
 		ui.Row(context).FillWidth().AlignItems(ui.Center).Children(func() {
-			ui.Textf(context, "Volume %.0f%%", application.volume).FontSize(14).FontWeight(600).Grow(1)
-			if ui.Checkbox(context.Key("mute"), &application.muted, "Mute").Disabled(application.busy).Changed() {
+			ui.Text(context, message(context, "Volume {level}%", map[string]any{"level": fmt.Sprintf("%.0f", application.volume)})).FontSize(14).FontWeight(600).Grow(1)
+			if ui.Checkbox(context.Key("mute"), &application.muted, text(context, "Mute")).Disabled(application.busy).Changed() {
 				application.setVolume()
 			}
 		})
-		if ui.Slider(context.Key("volume"), &application.volume, 0, 100).FillWidth().Label("Volume").Disabled(application.busy).Changed() {
+		if ui.Slider(context.Key("volume"), &application.volume, 0, 100).FillWidth().Label(text(context, "Volume")).Disabled(application.busy).Changed() {
 			application.setVolume()
 		}
 	})

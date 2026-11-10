@@ -22,6 +22,7 @@ type Component struct {
 type Catalog struct {
 	SchemaVersion int                 `json:"schemaVersion"`
 	Version       string              `json:"version"`
+	DebianVersion string              `json:"debianVersion"`
 	Revision      string              `json:"revision"`
 	Modified      bool                `json:"modified"`
 	Developer     string              `json:"developer"`

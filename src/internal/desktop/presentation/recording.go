@@ -6,6 +6,7 @@ import (
 
 	session "github.com/TomoriLab/MyGOFrame/src/internal/session/domain"
 
+	"github.com/TomoriLab/MyGOFrame/src/internal/desktop/presentation/localization"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -29,8 +30,10 @@ func (application *applicationState) refreshRecordingDevices() {
 			application.recordingProbeBusy = false
 			if err != nil {
 				application.errorMessage = err.Error()
+				application.debugEvent("recording.gpu-probe-failed", err.Error())
 				return
 			}
+			application.debugEvent("recording.gpu-probe-completed", fmt.Sprintf("%d devices", len(devices)))
 			application.recordingDevices = devices
 			application.recordingGPU = "Automatic"
 			for _, device := range devices {
@@ -64,23 +67,26 @@ func (application *applicationState) changeMonitoring() {
 		return nil, worker.engine.SetMonitoring(enabled)
 	})
 }
-func recordingSummary(status session.RecordingSnapshot) string {
+func recordingSummary(status session.RecordingSnapshot, contexts ...*ui.Context) string {
 	if status.Error != "" {
-		return "Recording failed: " + status.Error
+		return localization.Format(messageLocale(contexts), "Recording failed: {error}", map[string]any{"error": status.Error})
 	}
-	return fmt.Sprintf("Recording %s · %.1f s · %.1f MiB · %d frames · %d dropped", status.Phase, float64(status.DurationNanoseconds)/1e9, float64(status.Bytes)/(1024*1024), status.Frames, status.DroppedFrames)
+	locale := messageLocale(contexts)
+	return localization.Format(locale, "Recording {phase} · {seconds} s · {size} MiB · {frames, plural, one {# frame} other {# frames}} · {dropped} dropped", map[string]any{
+		"phase": localization.Text(locale, status.Phase), "seconds": fmt.Sprintf("%.1f", float64(status.DurationNanoseconds)/1e9), "size": fmt.Sprintf("%.1f", float64(status.Bytes)/(1024*1024)), "frames": status.Frames, "dropped": status.DroppedFrames,
+	})
 }
 func (application *applicationState) recordingControls(context *ui.Context) {
 	active := application.status.Recording.Active()
 	disabled := active || application.busy || application.recordingProbeBusy
-	ui.Text(context, "Video recording").FontSize(16).FontWeight(600)
+	ui.Text(context, text(context, "Video recording")).FontSize(16).FontWeight(600)
 	helpText(context, "Record the capture card while the preview and sharing window remain active.")
 	labels := []string{"Automatic"}
 	for _, device := range application.recordingDevices {
 		labels = append(labels, recordingDeviceLabel(device))
 	}
 	field(context, "Recording GPU", func() {
-		if ui.Select(context.Key("recording-gpu"), &application.recordingGPU, labels).FillWidth().Label("Recording GPU selection").Disabled(disabled).Changed() {
+		if localizedSelect(context.Key("recording-gpu"), &application.recordingGPU, labels).FillWidth().Label(text(context, "Recording GPU selection")).Disabled(disabled).Changed() {
 			application.recordingConfig.GPUID = "auto"
 			for _, device := range application.recordingDevices {
 				if recordingDeviceLabel(device) == application.recordingGPU {
@@ -112,34 +118,34 @@ func (application *applicationState) recordingControls(context *ui.Context) {
 		}
 	}
 	field(context, "Video codec", func() {
-		ui.Select(context.Key("recording-codec"), &application.recordingConfig.Codec, codecs).FillWidth().Label("Recording codec").Disabled(disabled)
+		ui.Select(context.Key("recording-codec"), &application.recordingConfig.Codec, codecs).FillWidth().Label(text(context, "Recording codec")).Disabled(disabled)
 	})
 	field(context, "Target bitrate (Mbps)", func() {
-		ui.NumberInput(context.Key("recording-bitrate"), &application.recordingConfig.BitrateMbps, .1, 1000, .1).FillWidth().Label("Recording bitrate").Disabled(disabled)
+		ui.NumberInput(context.Key("recording-bitrate"), &application.recordingConfig.BitrateMbps, .1, 1000, .1).FillWidth().Label(text(context, "Recording bitrate")).Disabled(disabled)
 	})
 	field(context, "Rate control", func() {
-		ui.Select(context.Key("recording-rate"), &application.recordingConfig.RateControl, []string{"vbr", "cbr"}).FillWidth().Label("Recording rate control").Disabled(disabled)
+		localizedSelect(context.Key("recording-rate"), &application.recordingConfig.RateControl, []string{"vbr", "cbr"}).FillWidth().Label(text(context, "Recording rate control")).Disabled(disabled)
 	})
 	field(context, "Output file", func() {
-		ui.TextInput(context.Key("recording-path"), &application.recordingConfig.Path).FillWidth().Placeholder("Automatic: ~/Videos/MyGOFrame/*.mkv").Label("Recording output path").Disabled(disabled)
+		ui.TextInput(context.Key("recording-path"), &application.recordingConfig.Path).FillWidth().Placeholder(text(context, "Automatic: ~/Videos/MyGOFrame/*.mkv")).Label(text(context, "Recording output path")).Disabled(disabled)
 	})
 	helpText(context, "Use an absolute .mkv or .mp4 path. Existing files are never overwritten. Bitrate is a target and depends on the content.")
-	ui.Checkbox(context.Key("recording-audio"), &application.recordingConfig.RecordAudio, "Record capture audio").Disabled(disabled)
+	ui.Checkbox(context.Key("recording-audio"), &application.recordingConfig.RecordAudio, text(context, "Record capture audio")).Disabled(disabled)
 	helpText(context, "Select the capture-card microphone input in Audio. Monitor volume and mute are independent of recording.")
 	if active {
-		if ui.PrimaryButton(context.Key("stop-recording"), "Stop recording").FillWidth().Disabled(application.busy || application.status.Recording.Phase == "stopping").Clicked() {
+		if ui.PrimaryButton(context.Key("stop-recording"), text(context, "Stop recording")).FillWidth().Disabled(application.busy || application.status.Recording.Phase == "stopping").Clicked() {
 			application.stopRecording()
 		}
 	} else {
-		if ui.PrimaryButton(context.Key("start-recording"), "Start recording").FillWidth().Disabled(disabled || !application.running || len(codecs) == 0).Clicked() {
+		if ui.PrimaryButton(context.Key("start-recording"), text(context, "Start recording")).FillWidth().Disabled(disabled || !application.running || len(codecs) == 0).Clicked() {
 			application.startRecording()
 		}
 	}
-	if ui.Button(context.Key("refresh-encoders"), "Refresh recording GPUs").FillWidth().Disabled(disabled).Clicked() {
+	if ui.Button(context.Key("refresh-encoders"), text(context, "Refresh recording GPUs")).FillWidth().Disabled(disabled).Clicked() {
 		application.refreshRecordingDevices()
 	}
 	if application.status.Recording.Phase != "" && application.status.Recording.Phase != "idle" {
-		helpText(context, recordingSummary(application.status.Recording))
+		helpText(context, recordingSummary(application.status.Recording, context))
 		if application.status.Recording.Path != "" {
 			helpText(context, application.status.Recording.Path)
 		}

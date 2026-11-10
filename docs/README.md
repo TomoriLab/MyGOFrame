@@ -9,6 +9,9 @@ Read [Architecture and memory ownership](architecture.md) before changing the Go
 - [Settings preset storage](presets.md): native controls, persistent configuration, validation, and recovery.
 
 - [Native settings design](ui-design.md): Fluent styling, overview cards, and hierarchical detail navigation.
+- [Debug mode](debugging.md): bounded diagnostics, saved enable preference, and report copying.
+- [Localization](l10n.md): translation catalogs, native app-language selection, and fallback verification.
+- [Release version management](versioning.md): canonical release metadata, synchronized manifests, and build identity.
 - [App information and licenses](about-and-licenses.md): native modal navigation, embedded notices, and build-time component inventory.
 
 ## Renderer integration

@@ -13,6 +13,7 @@ import (
 	recording "github.com/TomoriLab/MyGOFrame/src/internal/recording/domain"
 	session "github.com/TomoriLab/MyGOFrame/src/internal/session/domain"
 
+	"github.com/TomoriLab/MyGOFrame/src/internal/desktop/presentation/localization"
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
@@ -22,6 +23,10 @@ const defaultOutput = "System default"
 
 type applicationState struct {
 	services             desktopapp.Services
+	changeLocale         func(string)
+	debugEnabled         bool
+	debugUpdating        bool
+	debugDone            chan struct{}
 	aboutOpen            bool
 	aboutCatalog         *about.Catalog
 	aboutError           error
@@ -83,7 +88,11 @@ type applicationState struct {
 }
 
 func newApplication(services desktopapp.Services) *applicationState {
-	return &applicationState{services: services, selection: modeSelection{resolve: services.ResolveModes}, settingsPage: -1, recordingConfig: recording.DefaultRecordingConfiguration(), recordingGPU: "Automatic", monitorAudio: true, colorRange: "Auto", videoBackend: "auto", audioSource: audioOff, audioOutput: defaultOutput, volume: 50, measureLatency: services.MeasureLatency}
+	application := &applicationState{services: services, selection: modeSelection{resolve: services.ResolveModes}, settingsPage: -1, recordingConfig: recording.DefaultRecordingConfiguration(), recordingGPU: "Automatic", monitorAudio: true, colorRange: "Auto", videoBackend: "auto", audioSource: audioOff, audioOutput: defaultOutput, volume: 50, measureLatency: services.MeasureLatency}
+	if services.Diagnostics != nil {
+		application.debugEnabled = services.Diagnostics.Enabled()
+	}
+	return application
 }
 
 func (application *applicationState) retireGPUImage() {
@@ -182,6 +191,7 @@ func (application *applicationState) processGPUFailure() {
 		return
 	}
 	failure := application.gpuFailure
+	application.debugEvent("video.gpu-fallback", failure.Error())
 	generation := application.gpuFailureGeneration
 	application.gpuFailure = nil
 	application.gpuFallbackPending = true
@@ -267,7 +277,11 @@ func (application *applicationState) close() {
 	if application.closing {
 		return
 	}
+	application.debugEvent("app.closing", "")
 	application.closing = true
+	if application.debugDone != nil {
+		<-application.debugDone
+	}
 	if application.recordingProbeDone != nil {
 		<-application.recordingProbeDone
 	}
@@ -467,11 +481,11 @@ func (application *applicationState) view(context *ui.Context) {
 		application.quickPresetBar(context, compact, width)
 		ui.Row(context).FillWidth().Grow(1).MinHeight(0).Padding(0, padding, padding).Gap(16).Children(func() {
 			if !compact {
-				ui.Column(context).Width(330).Shrink(0).FillHeight().Background(appearance.card).Border(1, appearance.stroke).Radius(8).Label("Capture settings").Children(func() {
+				ui.Column(context).Width(330).Shrink(0).FillHeight().Background(appearance.card).Border(1, appearance.stroke).Radius(8).Label(text(context, "Capture settings")).Children(func() {
 					ui.Row(context).FillWidth().Shrink(0).Padding(16, 16, 8).Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.Text(context, "Settings").FontSize(20).FontWeight(600).Grow(1).MinWidth(0).SingleLine()
+						ui.Text(context, text(context, "Settings")).FontSize(20).FontWeight(600).Grow(1).MinWidth(0).SingleLine()
 						application.themeSwitch(context)
-						if ui.Button(context.Key("refresh"), "Refresh").Tooltip("Refresh capture and audio devices").Disabled(application.busy || application.running).Clicked() {
+						if ui.Button(context.Key("refresh"), text(context, "Refresh")).Tooltip(text(context, "Refresh capture and audio devices")).Disabled(application.busy || application.running).Clicked() {
 							application.refresh()
 						}
 					})
@@ -481,7 +495,7 @@ func (application *applicationState) view(context *ui.Context) {
 			ui.Column(context).Grow(1).MinWidth(0).FillHeight().Background(appearance.card).Border(1, appearance.stroke).Radius(8).Children(func() {
 				if !compact {
 					ui.Row(context).FillWidth().Shrink(0).Padding(12, 16).Gap(12).AlignItems(ui.Center).Children(func() {
-						ui.Text(context, "Preview").FontSize(16).FontWeight(600).Grow(1)
+						ui.Text(context, text(context, "Preview")).FontSize(16).FontWeight(600).Grow(1)
 						application.captureStatus(context, appearance)
 					})
 				}
@@ -492,14 +506,14 @@ func (application *applicationState) view(context *ui.Context) {
 	})
 	ui.DialogBase(context, &application.settingsOpen, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(0, 0, 0, 0.45))
-		panel.Column().Size(min(400, max(1, width-24)), min(680, max(1, height-24))).Background(appearance.card).Border(1, appearance.stroke).Radius(12).Label("Capture settings dialog").Children(func() {
+		panel.Column().Size(min(400, max(1, width-24)), min(680, max(1, height-24))).Background(appearance.card).Border(1, appearance.stroke).Radius(12).Label(text(context, "Capture settings dialog")).Children(func() {
 			ui.Row(context).FillWidth().Shrink(0).Padding(12).Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Text(context, "Settings").FontSize(20).FontWeight(600).Grow(1).MinWidth(0).SingleLine()
+				ui.Text(context, text(context, "Settings")).FontSize(20).FontWeight(600).Grow(1).MinWidth(0).SingleLine()
 				application.themeSwitch(context)
-				if ui.Button(context.Key("dialog-refresh"), "Refresh").Disabled(application.busy || application.running).Clicked() {
+				if ui.Button(context.Key("dialog-refresh"), text(context, "Refresh")).Disabled(application.busy || application.running).Clicked() {
 					application.refresh()
 				}
-				if ui.Button(context.Key("close-settings"), "Close").Clicked() {
+				if ui.Button(context.Key("close-settings"), text(context, "Close")).Clicked() {
 					application.settingsOpen = false
 				}
 			})
@@ -510,7 +524,7 @@ func (application *applicationState) view(context *ui.Context) {
 }
 
 func (application *applicationState) preview(context *ui.Context) {
-	viewport := ui.Column(context).FillWidth().Grow(1).MinWidth(0).MinHeight(0).Clip().Label("Video viewport")
+	viewport := ui.Column(context).FillWidth().Grow(1).MinWidth(0).MinHeight(0).Clip().Label(text(context, "Video viewport"))
 	if application.fullscreen {
 		viewport.Fill()
 	}
@@ -518,7 +532,7 @@ func (application *applicationState) preview(context *ui.Context) {
 		if application.bitmap != nil {
 			bitmap := application.bitmap
 			// The video contributes no intrinsic layout size, so capture resolution cannot enlarge the viewport.
-			ui.Box(context).Fill().MinWidth(0).MinHeight(0).Label("Live capture preview").Draw(func(painter *ui.Painter, bounds ui.Rect) {
+			ui.Box(context).Fill().MinWidth(0).MinHeight(0).Label(text(context, "Live capture preview")).Draw(func(painter *ui.Painter, bounds ui.Rect) {
 				if !application.canPresentFrame(painter) {
 					return
 				}
@@ -526,12 +540,12 @@ func (application *applicationState) preview(context *ui.Context) {
 				painter.ImageRegion(bitmap, ui.Rect{}, fitVideoRectangle(bounds, width, height), ui.ImageOptions{})
 			})
 		} else {
-			ui.Text(context, "Capture preview").FontSize(24).TextColor(ui.RGB(205, 209, 220))
+			ui.Text(context, text(context, "Capture preview")).FillWidth().MinWidth(0).TextAlign(ui.Center).FontSize(24).TextColor(ui.RGB(205, 209, 220))
 			message := "Choose a video mode and start capture."
 			if application.running {
 				message = "Waiting for video frames…"
 			}
-			ui.Text(context, message).FontSize(14).TextColor(ui.RGB(145, 152, 170))
+			ui.Text(context, text(context, message)).FillWidth().MinWidth(0).TextAlign(ui.Center).FontSize(14).TextColor(ui.RGB(145, 152, 170))
 		}
 	})
 }
@@ -555,7 +569,7 @@ func fitVideoRectangle(bounds ui.Rect, width, height int) ui.Rect {
 	return ui.Rect{X: bounds.X + (bounds.W-fittedWidth)/2, Y: bounds.Y + (bounds.H-fittedHeight)/2, W: fittedWidth, H: fittedHeight}
 }
 
-func actualVideoSummary(status session.SessionSnapshot) string {
+func actualVideoSummary(status session.SessionSnapshot, contexts ...*ui.Context) string {
 	video := status.Video
 	if video.Width == 0 || video.Height == 0 {
 		return ""
@@ -565,7 +579,7 @@ func actualVideoSummary(status session.SessionSnapshot) string {
 		result += fmt.Sprintf(" · %.2f fps", float64(video.IntervalDenominator)/float64(video.IntervalNumerator))
 	}
 	if label := map[int32]string{0: "Auto", 1: "Limited", 2: "Full"}[video.ColorRange]; label != "" {
-		result += " · " + label
+		result += " · " + localization.Text(messageLocale(contexts), label)
 	}
 	return result
 }
