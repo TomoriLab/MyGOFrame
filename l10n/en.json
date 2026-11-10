@@ -232,5 +232,12 @@
   "Clear diagnostic history": "Clear diagnostic history",
   "{count, plural, one {# event retained} other {# events retained}} · {dropped} discarded": "{count, plural, one {# event retained} other {# events retained}} · {dropped} discarded",
   "Language and debugging": "Language and debugging",
-  "Settings detail": "Settings detail"
+  "Settings detail": "Settings detail",
+  "Toggle sidebar": "Toggle sidebar",
+  "Capture controls": "Capture controls",
+  "Capture information": "Capture information",
+  "License and acknowledgments": "License and acknowledgments",
+  "Dependencies and licenses": "Dependencies and licenses",
+  "Third-party components retain their respective licenses.": "Third-party components retain their respective licenses.",
+  "Settings panel content": "Settings panel content"
 }

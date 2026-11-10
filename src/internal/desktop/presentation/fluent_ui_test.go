@@ -33,16 +33,11 @@ func TestSettingsCategoriesPreserveSelections(t *testing.T) {
 func TestCompactFluentActionsRemainInsideWindow(t *testing.T) {
 	application := newTestApplication()
 	tester := ui.NewTester(application.view, 320, 240)
-	for _, label := range []string{"MyGOFrame", "Settings", "F11"} {
-		bounds, found := tester.Find(label)
-		if !found || bounds.X < 0 || bounds.X+bounds.W > 320 || bounds.Y < 0 || bounds.Y+bounds.H > 240 {
-			t.Fatalf("compact action %q exceeds the window: %+v", label, bounds)
-		}
+	requireInside(t, tester, "Toggle sidebar", ui.Rect{W: 320, H: 240})
+	if err := tester.Click("Toggle sidebar"); err != nil {
+		t.Fatal(err)
 	}
-	bounds, found := tester.Find("Capture window")
-	if !found || bounds.X < 0 || bounds.X+bounds.W > 320 {
-		t.Fatal("compact capture-window action is unavailable")
-	}
+	requireInside(t, tester, "Capture settings dialog", ui.Rect{W: 320, H: 240})
 
 }
 
@@ -51,7 +46,7 @@ func TestFluentAppearanceFollowsSystemTheme(t *testing.T) {
 	tester := ui.NewTester(application.view, 1280, 800)
 	for _, dark := range []bool{false, true, false} {
 		tester.SetDark(dark)
-		expected := fluentAppearance(dark).theme.Background
+		expected := fluentAppearance(dark).card
 		pixel := tester.Image().RGBAAt(0, 0)
 		if pixel.R != expected.R || pixel.G != expected.G || pixel.B != expected.B {
 			t.Fatalf("system dark=%t gave window background %v, want %v", dark, pixel, expected)
@@ -89,6 +84,7 @@ func colorLuminance(color ui.Color) float64 {
 }
 
 func TestSettingsOrderToolbarGroupingAndThemeSwitch(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	application := newTestApplication()
 	tester := ui.NewTester(application.view, 1280, 800)
 	if tester.HasText("Sharing") {
@@ -105,9 +101,10 @@ func TestSettingsOrderToolbarGroupingAndThemeSwitch(t *testing.T) {
 	capture, _ := tester.Find("Capture window")
 	fullscreen, _ := tester.Find("Fullscreen · F11")
 	recording, _ := tester.Find("Record")
-	if capture.X+capture.W > fullscreen.X || fullscreen.X+fullscreen.W > recording.X {
-		t.Fatal("window actions and recording are not ordered correctly")
+	if recording.Y >= capture.Y || capture.Y >= fullscreen.Y {
+		t.Fatal("sidebar actions are not ordered correctly")
 	}
+
 	before := tester.Image().RGBAAt(0, 0)
 	if err := tester.Click("Theme switch"); err != nil {
 		t.Fatal(err)

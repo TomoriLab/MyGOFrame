@@ -63,10 +63,12 @@ func TestPreviewKeepsAllSourceCornersVisible(t *testing.T) {
 func TestCompactSettingsRemainAccessible(t *testing.T) {
 	application := newTestApplication()
 	tester := ui.NewTester(application.view, 320, 240)
-	if _, found := tester.Find("Capture settings"); found {
-		t.Fatal("fixed sidebar consumes the compact video viewport")
+	viewport, _ := tester.Find("Capture viewport")
+	if viewport.X != 40 {
+		t.Fatal("compact sidebar is not reduced to the toggle rail")
 	}
-	if err := tester.Click("Settings"); err != nil {
+
+	if err := tester.Click("Toggle sidebar"); err != nil {
 		t.Fatal(err)
 	}
 	dialog, found := tester.Find("Capture settings dialog")
@@ -93,7 +95,7 @@ func TestLongStatusDoesNotConsumePreview(t *testing.T) {
 func TestOpenCompactSettingsResizeToSidebar(t *testing.T) {
 	application := newTestApplication()
 	tester := ui.NewTester(application.view, 320, 240)
-	if err := tester.Click("Settings"); err != nil {
+	if err := tester.Click("Toggle sidebar"); err != nil {
 		t.Fatal(err)
 	}
 	tester.SetSize(1280, 800)
@@ -107,7 +109,7 @@ func TestOpenCompactSettingsResizeToSidebar(t *testing.T) {
 		t.Fatal("compact settings dialog remained in the wide layout")
 	}
 	tester.SetSize(320, 240)
-	if err := tester.Click("Settings"); err != nil {
+	if err := tester.Click("Toggle sidebar"); err != nil {
 		t.Fatal(err)
 	}
 	if !application.settingsOpen {

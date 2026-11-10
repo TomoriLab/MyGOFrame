@@ -54,50 +54,23 @@ func makeFluentPalette(dark bool) fluentPalette {
 }
 
 func (application *applicationState) commandBar(context *ui.Context, compact bool, width float32) {
-	appearance := fluentAppearance(context.Theme().Dark)
 	ui.Row(context).FillWidth().Shrink(0).Padding(12, 16).Gap(8).AlignItems(ui.Center).Children(func() {
 		if !compact {
 			ui.Image(context, applicationBranding().logo).Size(40, 40).Fit(ui.Contain).Radius(40 * branding.CornerRadiusRatio).Clip().Label(text(context, "MyGOFrame logo"))
 		}
 		ui.Column(context).Grow(1).MinWidth(0).Gap(2).Children(func() {
 			ui.Text(context, "MyGOFrame").FillWidth().FontSize(20).FontWeight(600).SingleLine()
-			if !compact {
-				ui.Text(context, text(context, "Capture viewer")).FontSize(12).TextColor(appearance.theme.TextMuted)
-			}
 		})
-		if !compact && width >= 1120 && len(application.presets) > 0 {
-			application.quickPresetControls(context, 200, true, 8, false)
-		}
 		if compact {
 			if ui.Button(context.Key("settings"), text(context, "Settings")).Clicked() {
 				application.settingsOpen = true
 			}
 		}
-		ui.Row(context).Shrink(0).Gap(4).AlignItems(ui.Center).Label(text(context, "Window actions")).Children(func() {
-			if compact {
-				button := ui.ButtonBase(context.Key("capture-window")).Size(28, 32).Label(text(context, "Capture window")).Tooltip(text(context, "Open the video-only capture window"))
-				button.Draw(func(painter *ui.Painter, bounds ui.Rect) { drawSettingsIcon(painter, bounds, 0, appearance.theme.Text) })
-				if button.Clicked() {
-					application.openPresentation()
-				}
-			} else if ui.Button(context.Key("capture-window"), text(context, "Capture window")).Label(text(context, "Open capture window action")).Tooltip(text(context, "Open a separate video-only window for screen sharing")).Clicked() {
-				application.openPresentation()
-			}
-			fullscreenLabel := "Fullscreen · F11"
-			if compact {
-				fullscreenLabel = "F11"
-			}
-			if ui.Button(context.Key("fullscreen"), text(context, fullscreenLabel)).Label(text(context, "Fullscreen action")).Tooltip(text(context, "Show the preview fullscreen")).Clicked() {
-				application.setFullscreen(true)
-			}
-		})
-		if len(application.presets) == 0 {
-			application.recordingCommandButton(context, compact)
-		}
+
 	})
 }
 
-func (application *applicationState) recordingCommandButton(context *ui.Context, compact bool) {
+func (application *applicationState) recordingCommandButton(context *ui.Context, compact bool) ui.Element {
 	appearance := fluentAppearance(context.Theme().Dark)
 	label := "Record"
 	if application.status.Recording.Active() {
@@ -128,6 +101,7 @@ func (application *applicationState) recordingCommandButton(context *ui.Context,
 			application.startRecording()
 		}
 	}
+	return button
 }
 
 func (application *applicationState) themeSwitch(context *ui.Context) {
@@ -158,6 +132,9 @@ func (application *applicationState) themeSwitch(context *ui.Context) {
 	})
 	if button.Changed() {
 		application.themeOverride = true
+		if err := saveThemePreference(application.darkTheme); err != nil {
+			application.errorMessage = err.Error()
+		}
 	}
 }
 
@@ -187,10 +164,10 @@ func (application *applicationState) previewStatus(context *ui.Context, compact 
 				ui.Text(context, text(context, description)).FontSize(14).FontWeight(600)
 			}
 			summary := statusSummary(application.status, context)
-			if application.status.Recording.Active() || application.status.Recording.Phase == "failed" {
-				summary = recordingSummary(application.status.Recording, context)
-			}
 			ui.Text(context, text(context, summary)).FontSize(12).TextColor(appearance.theme.TextMuted)
+			if application.status.Recording.Active() || application.status.Recording.Phase == "failed" {
+				ui.Text(context, recordingSummary(application.status.Recording, context)).FontSize(12).TextColor(appearance.theme.TextMuted)
+			}
 			if application.status.FallbackReason != "" {
 				ui.Text(context, text(context, "GPU video unavailable; using CPU processing.")).FontSize(12).TextColor(appearance.theme.TextMuted)
 			}
@@ -256,7 +233,26 @@ func (application *applicationState) settingsOverview(context *ui.Context) {
 	if context.Theme().Dark {
 		iconColor = ui.Hex("#479ef5")
 	}
-	ui.Scroll(context.Key("settings-overview")).FillWidth().Grow(1).MinHeight(0).Label(text(context, "Settings overview")).Children(func() {
+	var cards []ui.Element
+	scroll := ui.Scroll(context.Key("settings-overview")).TrackScroll(&application.settingsOverviewScroll).FillWidth().Grow(1).MinHeight(0).Label(text(context, "Settings overview"))
+	// Only the initial top position hides an incomplete trailing card.
+	scroll.DrawOver(func(painter *ui.Painter, viewport ui.Rect) {
+		if application.settingsOverviewScroll.Y > 0 {
+			return
+		}
+		for _, card := range cards {
+			bounds := card.Bounds()
+			if bounds.Y+bounds.H <= viewport.Y+viewport.H {
+				continue
+			}
+			left, top := max(bounds.X, viewport.X), max(bounds.Y, viewport.Y)
+			right, bottom := min(bounds.X+bounds.W, viewport.X+viewport.W), min(bounds.Y+bounds.H, viewport.Y+viewport.H)
+			if right > left && bottom > top {
+				painter.Fill(ui.Rect{X: left, Y: top, W: right - left, H: bottom - top}, palette.card, 0)
+			}
+		}
+	})
+	scroll.Children(func() {
 		ui.Column(context).FillWidth().Padding(0, 12, 12).Gap(8).Children(func() {
 			for index, category := range settingsCategories {
 				label := category.title + " settings"
@@ -264,6 +260,8 @@ func (application *applicationState) settingsOverview(context *ui.Context) {
 					label = "Open app settings"
 				}
 				button := ui.ButtonBase(context.Key(category.title)).FillWidth().MinWidth(0).Shrink(0).MinHeight(76).Padding(12).Gap(12).AlignItems(ui.Center).Background(palette.card).Border(1, palette.stroke).Radius(6).Label(text(context, label))
+				cards = append(cards, button)
+
 				if button.Hovered() {
 					button.Background(palette.theme.SurfaceHover)
 				}

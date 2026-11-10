@@ -17,6 +17,12 @@ func revealAboutControl(t *testing.T, tester *ui.Tester, scrollLabel, controlLab
 		if !found {
 			t.Fatalf("missing scroll viewport %q", scrollLabel)
 		}
+		for _, label := range []string{"Settings panel content", "설정 패널 내용", "設定パネルの内容"} {
+			if parent, exists := tester.Find(label); exists && (scrollLabel == "Settings detail" || scrollLabel == "설정 내용" || scrollLabel == "設定の内容") {
+				top, bottom := max(viewport.Y, parent.Y), min(viewport.Y+viewport.H, parent.Y+parent.H)
+				viewport.Y, viewport.H = top, max(float32(0), bottom-top)
+			}
+		}
 		if bounds, exists := tester.Find(controlLabel); exists && bounds.Y >= viewport.Y && bounds.Y+bounds.H <= viewport.Y+viewport.H {
 			return
 		}
@@ -45,7 +51,7 @@ func TestAboutNavigationAndNestedLicenseDialogs(t *testing.T) {
 				tester.SetDark(dark)
 				compact := size[0] < 800
 				if compact {
-					if err := tester.Click("Settings"); err != nil {
+					if err := tester.Click("Toggle sidebar"); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -61,10 +67,18 @@ func TestAboutNavigationAndNestedLicenseDialogs(t *testing.T) {
 				window := ui.Rect{W: float32(size[0]), H: float32(size[1])}
 				panel := requireInside(t, tester, "About dialog", window)
 				requireInside(t, tester, "Close app information", panel)
+				logo, found := tester.Find("MyGOFrame logo")
+				if !found || logo.W != 96 || logo.H != 96 || logo.X < panel.X || logo.X+logo.W > panel.X+panel.W {
+					t.Fatalf("About logo has invalid geometry: %+v", logo)
+				}
 				if application.settingsPage != -1 || !application.aboutOpen || !tester.HasText("zeroday0619 / Tomori Lab") || !tester.HasText("zero@tomori.dev") {
 					t.Fatal("About did not open a modal with repository developer metadata")
 				}
-				revealAboutControl(t, tester, "About information", "View MyGOFrame license")
+				if size[1]-24 < 560 {
+					revealAboutControl(t, tester, "About information", "View MyGOFrame license")
+				} else {
+					requireInside(t, tester, "View MyGOFrame license", panel)
+				}
 				if err := tester.Click("View MyGOFrame license"); err != nil {
 					t.Fatal(err)
 				}
@@ -95,6 +109,17 @@ func TestAboutNavigationAndNestedLicenseDialogs(t *testing.T) {
 				tester.Key(0, ui.KeyEscape)
 				if application.licenseOpen || !application.aboutOpen || (compact && !application.settingsOpen) {
 					t.Fatal("Escape did not close only the license modal")
+				}
+				if viewport, _ := tester.Find("About dialog"); viewport.H < 560 {
+					revealAboutControl(t, tester, "About information", "Open source and runtime notices")
+				}
+				if err := tester.Click("Open source and runtime notices"); err != nil {
+					t.Fatal(err)
+				}
+				requireInside(t, tester, "Open source and runtime notices", window)
+				tester.Key(0, ui.KeyEscape)
+				if application.noticesOpen || !application.aboutOpen {
+					t.Fatal("notice Escape dismissed its parent")
 				}
 				tester.Key(0, ui.KeyEscape)
 				if application.aboutOpen || (compact && !application.settingsOpen) || !application.running {
@@ -129,7 +154,13 @@ func TestThirdPartySearchAndLongLicenseReader(t *testing.T) {
 	application.openAbout()
 	application.licenseSearch = "MyGo"
 	tester := ui.NewTester(application.view, 1280, 800)
-	revealAboutControl(t, tester, "About information", "License for MyGo")
+	if viewport, _ := tester.Find("About dialog"); viewport.H < 560 {
+		revealAboutControl(t, tester, "About information", "Open source and runtime notices")
+	}
+	if err := tester.Click("Open source and runtime notices"); err != nil {
+		t.Fatal(err)
+	}
+	revealAboutControl(t, tester, "Search licenses", "License for MyGo")
 	if err := tester.Click("License for MyGo"); err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +197,10 @@ func TestThirdPartySearchAndLongLicenseReader(t *testing.T) {
 			requireInside(t, tester, "Copy license text", panel)
 		}
 		tester.Key(0, ui.KeyEscape)
+		tester.ClickAt(2, 2)
+		if application.noticesOpen || !application.aboutOpen {
+			t.Fatal("notice backdrop dismissed its parent")
+		}
 		tester.ClickAt(2, 2)
 		if application.aboutOpen {
 			t.Fatal("About backdrop did not dismiss the dialog")

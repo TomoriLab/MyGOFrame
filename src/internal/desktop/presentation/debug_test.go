@@ -24,7 +24,7 @@ func TestNativeDebugSwitchCopyClearAndCaptureIsolation(t *testing.T) {
 				tester.SetLocale(locale)
 				translate := func(value string) string { return localization.Text(locale, value) }
 				if size[0] < 800 {
-					if err := tester.Click(translate("Settings")); err != nil {
+					if err := tester.Click(translate("Toggle sidebar")); err != nil {
 						t.Fatal(err)
 					}
 				}

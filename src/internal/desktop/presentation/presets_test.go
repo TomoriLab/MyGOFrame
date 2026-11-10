@@ -65,7 +65,7 @@ func TestPresetNativeControlsAndCurrentSettings(t *testing.T) {
 func TestCompactPresetTabRemainsReachable(t *testing.T) {
 	application := newTestApplication()
 	tester := ui.NewTester(application.view, 320, 240)
-	if err := tester.Click("Settings"); err != nil {
+	if err := tester.Click("Toggle sidebar"); err != nil {
 		t.Fatal(err)
 	}
 	revealAboutControl(t, tester, "Settings overview", "Presets settings")
@@ -101,39 +101,25 @@ func TestQuickPresetControlsStayInsideWindowAndLockDuringRecording(t *testing.T)
 		application.presets = []session.CapturePreset{{Name: "Console one"}, {Name: "Console two"}}
 		application.selectedPreset = "Console one"
 		tester := ui.NewTester(application.view, size[0], size[1])
-		for _, label := range []string{"Quick capture controls", "Quick preset selection", "Start capture"} {
-			bounds, found := tester.Find(label)
-			if !found || bounds.X < 0 || bounds.X+bounds.W > float32(size[0])+1 || bounds.Y < 0 || bounds.Y+bounds.H > float32(size[1])+1 {
-				t.Fatalf("%s exceeds quick controls at %v: %+v", label, size, bounds)
+		if size[0] < 800 {
+			if err := tester.Click("Toggle sidebar"); err != nil {
+				t.Fatal(err)
 			}
 		}
-		selector, _ := tester.Find("Quick preset selection")
-		start, _ := tester.Find("Preset capture action")
-		recording, _ := tester.Find("Recording action")
-		aligned := selector.Y == start.Y
-		if size[0] < 560 {
-			aligned = selector.Y+selector.H+8 == start.Y
+		selector, found := tester.Find("Capture preset")
+		if !found || selector.X < 0 || selector.X+selector.W > float32(size[0]) {
+			t.Fatal("preset selector exceeds sidebar")
 		}
-		if selector.W < 176 || selector.H != 32 || start.H != 32 || !aligned || recording.X+recording.W > start.X || recording.Y != start.Y {
-			t.Fatalf("quick controls collapsed or lost alignment at %v: preset=%+v start=%+v", size, selector, start)
-		}
-		if size[0] >= 1120 {
-			capture, _ := tester.Find("Open capture window action")
-			if selector.Y != capture.Y || start.X+start.W > capture.X {
-				t.Fatalf("preset group is not aligned with toolbar: preset=%+v start=%+v capture=%+v", selector, start, capture)
-			}
-		} else if size[0] >= 800 {
-			settings, _ := tester.Find("Capture settings")
-			if selector.X != settings.X || selector.W != settings.W || recording.X != settings.X+settings.W+16 {
-				t.Fatalf("quick controls do not follow content columns: preset=%+v settings=%+v start=%+v", selector, settings, start)
-			}
+
+		if size[0] < 800 {
+			revealAboutControl(t, tester, "Settings panel content", "Start capture")
 		}
 		if err := tester.Click("Start capture"); err != nil {
 			t.Fatal("saved preset did not enable quick start:", err)
 		}
 		application.status.Recording = session.RecordingSnapshot{Phase: "recording"}
 		tester.Frame()
-		_ = tester.Click("Quick preset selection")
+		_ = tester.Click("Capture preset")
 		if tester.HasText("Console two") {
 			t.Fatal("recording opened the preset selector")
 		}

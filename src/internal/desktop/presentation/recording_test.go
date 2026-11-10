@@ -13,20 +13,20 @@ func TestSettingsOverviewAndDetailStayInsidePanel(t *testing.T) {
 	for _, size := range [][2]int{{320, 240}, {640, 480}, {900, 600}, {1280, 800}, {1920, 1080}} {
 		application := newTestApplication()
 		tester := ui.NewTester(application.view, size[0], size[1])
-		if tester.HasText("Settings") {
-			if err := tester.Click("Settings"); err != nil {
+		if size[0] < 800 {
+			if err := tester.Click("Toggle sidebar"); err != nil {
 				t.Fatal(err)
 			}
 		}
 		if application.settingsPage != -1 {
 			t.Fatal("settings did not start at the overview")
 		}
-		outer, found := tester.Find("Capture settings")
+		outer, found := tester.Find("Capture settings dialog")
 		if !found {
-			outer, found = tester.Find("Capture settings dialog")
+			outer, found = tester.Find("Capture settings")
 		}
 		overview, exists := tester.Find("Settings overview")
-		if !found || !exists || overview.X < outer.X || overview.X+overview.W > outer.X+outer.W+1 || overview.Y+overview.H > outer.Y+outer.H+1 {
+		if !found || !exists || overview.X < outer.X || overview.X+overview.W > outer.X+outer.W+1 || (size[0] >= 800 && overview.Y+overview.H > outer.Y+outer.H+1) {
 			t.Fatalf("overview exceeds settings at %v: overview=%+v panel=%+v", size, overview, outer)
 		}
 		tester.Scroll(overview.X+overview.W/2, overview.Y+overview.H/2, 0, 168)

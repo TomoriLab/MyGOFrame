@@ -232,5 +232,12 @@
   "Clear diagnostic history": "診断履歴を消去",
   "{count, plural, one {# event retained} other {# events retained}} · {dropped} discarded": "履歴 {count}件 · 破棄 {dropped}件",
   "Language and debugging": "言語とデバッグの設定",
-  "Settings detail": "設定の内容"
+  "Settings detail": "設定の内容",
+  "Toggle sidebar": "サイドバーを折りたたむ／展開する",
+  "Capture controls": "キャプチャー操作",
+  "Capture information": "キャプチャー情報",
+  "License and acknowledgments": "ライセンスと謝辞",
+  "Dependencies and licenses": "依存関係とライセンス",
+  "Third-party components retain their respective licenses.": "サードパーティの構成要素には、それぞれのライセンスが適用されます。",
+  "Settings panel content": "設定パネルの内容"
 }

@@ -17,4 +17,8 @@ func testServices() desktopapp.Services {
 		GPUTimings: native.GPUTimings, Notices: notices.Load,
 	}
 }
-func newTestApplication() *applicationState { return newApplication(testServices()) }
+func newTestApplication() *applicationState {
+	application := newApplication(testServices())
+	application.themeOverride = false
+	return application
+}

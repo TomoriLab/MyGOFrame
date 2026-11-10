@@ -22,73 +22,80 @@ const audioOff = "Off"
 const defaultOutput = "System default"
 
 type applicationState struct {
-	services             desktopapp.Services
-	changeLocale         func(string)
-	debugEnabled         bool
-	debugUpdating        bool
-	debugDone            chan struct{}
-	aboutOpen            bool
-	aboutCatalog         *about.Catalog
-	aboutError           error
-	licenseOpen          bool
-	licenseComponent     about.Component
-	licenseBody          string
-	licenseSearch        string
-	licenseNeedsReset    bool
-	window               *mygo.Window
-	presentation         *presentationWindow
-	closing              bool
-	worker               *captureWorker
-	devices              []session.VideoDevice
-	audioDevices         session.AudioDevices
-	device               string
-	selection            modeSelection
-	colorRange           string
-	videoBackend         string
-	audioSource          string
-	audioOutput          string
-	volume               float64
-	muted                bool
-	running              bool
-	busy                 bool
-	fullscreen           bool
-	settingsOpen         bool
-	themeOverride        bool
-	darkTheme            bool
-	settingsPage         int
-	recordingConfig      session.RecordingConfiguration
-	recordingDevices     []session.RecordingDevice
-	recordingGPU         string
-	recordingProbeBusy   bool
-	recordingProbeDone   chan struct{}
-	monitorAudio         bool
-	presets              []session.CapturePreset
-	selectedPreset       string
-	presetName           string
-	presetBusy           bool
-	presetDone           chan struct{}
-	presetError          string
-	presetNotice         string
-	presetDeletePending  bool
-	notice               string
-	errorMessage         string
-	status               session.SessionSnapshot
-	bitmap               *ui.Bitmap
-	displayedFrame       capture.Frame
-	detachedPixels       []byte
-	gpuImage             capture.GPUImage
-	gpuGeneration        uint64
-	gpuFailure           error
-	gpuFailureGeneration uint64
-	gpuFallbackPending   bool
-	gpuMetrics           []capture.GPURenderMetrics
-	measureLatency       bool
-	gpuStartedAt         time.Time
-	gpuPendingViews      uint32
+	services                 desktopapp.Services
+	changeLocale             func(string)
+	sidebarCollapsed         bool
+	settingsOverviewScroll   ui.ScrollState
+	settingsSectionClosed    bool
+	controlsSectionClosed    bool
+	informationSectionClosed bool
+	debugEnabled             bool
+	debugUpdating            bool
+	debugDone                chan struct{}
+	aboutOpen                bool
+	noticesOpen              bool
+	aboutCatalog             *about.Catalog
+	aboutError               error
+	licenseOpen              bool
+	licenseComponent         about.Component
+	licenseBody              string
+	licenseSearch            string
+	licenseNeedsReset        bool
+	window                   *mygo.Window
+	presentation             *presentationWindow
+	closing                  bool
+	worker                   *captureWorker
+	devices                  []session.VideoDevice
+	audioDevices             session.AudioDevices
+	device                   string
+	selection                modeSelection
+	colorRange               string
+	videoBackend             string
+	audioSource              string
+	audioOutput              string
+	volume                   float64
+	muted                    bool
+	running                  bool
+	busy                     bool
+	fullscreen               bool
+	settingsOpen             bool
+	themeOverride            bool
+	darkTheme                bool
+	settingsPage             int
+	recordingConfig          session.RecordingConfiguration
+	recordingDevices         []session.RecordingDevice
+	recordingGPU             string
+	recordingProbeBusy       bool
+	recordingProbeDone       chan struct{}
+	monitorAudio             bool
+	presets                  []session.CapturePreset
+	selectedPreset           string
+	presetName               string
+	presetBusy               bool
+	presetDone               chan struct{}
+	presetError              string
+	presetNotice             string
+	presetDeletePending      bool
+	notice                   string
+	errorMessage             string
+	status                   session.SessionSnapshot
+	bitmap                   *ui.Bitmap
+	displayedFrame           capture.Frame
+	detachedPixels           []byte
+	gpuImage                 capture.GPUImage
+	gpuGeneration            uint64
+	gpuFailure               error
+	gpuFailureGeneration     uint64
+	gpuFallbackPending       bool
+	gpuMetrics               []capture.GPURenderMetrics
+	measureLatency           bool
+	gpuStartedAt             time.Time
+	gpuPendingViews          uint32
 }
 
 func newApplication(services desktopapp.Services) *applicationState {
 	application := &applicationState{services: services, selection: modeSelection{resolve: services.ResolveModes}, settingsPage: -1, recordingConfig: recording.DefaultRecordingConfiguration(), recordingGPU: "Automatic", monitorAudio: true, colorRange: "Auto", videoBackend: "auto", audioSource: audioOff, audioOutput: defaultOutput, volume: 50, measureLatency: services.MeasureLatency}
+	application.darkTheme, application.themeOverride = loadThemePreference()
 	if services.Diagnostics != nil {
 		application.debugEnabled = services.Diagnostics.Enabled()
 	}
@@ -472,52 +479,31 @@ func (application *applicationState) view(context *ui.Context) {
 	if !compact {
 		application.settingsOpen = false
 	}
-	padding := float32(16)
-	if compact {
-		padding = 8
-	}
-	ui.Column(context).Fill().Background(appearance.theme.Background).Children(func() {
-		application.commandBar(context, compact, width)
-		application.quickPresetBar(context, compact, width)
-		ui.Row(context).FillWidth().Grow(1).MinHeight(0).Padding(0, padding, padding).Gap(16).Children(func() {
-			if !compact {
-				ui.Column(context).Width(330).Shrink(0).FillHeight().Background(appearance.card).Border(1, appearance.stroke).Radius(8).Label(text(context, "Capture settings")).Children(func() {
-					ui.Row(context).FillWidth().Shrink(0).Padding(16, 16, 8).Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.Text(context, text(context, "Settings")).FontSize(20).FontWeight(600).Grow(1).MinWidth(0).SingleLine()
-						application.themeSwitch(context)
-						if ui.Button(context.Key("refresh"), text(context, "Refresh")).Tooltip(text(context, "Refresh capture and audio devices")).Disabled(application.busy || application.running).Clicked() {
-							application.refresh()
-						}
-					})
-					application.settingsBody(context)
-				})
-			}
-			ui.Column(context).Grow(1).MinWidth(0).FillHeight().Background(appearance.card).Border(1, appearance.stroke).Radius(8).Children(func() {
-				if !compact {
-					ui.Row(context).FillWidth().Shrink(0).Padding(12, 16).Gap(12).AlignItems(ui.Center).Children(func() {
-						ui.Text(context, text(context, "Preview")).FontSize(16).FontWeight(600).Grow(1)
-						application.captureStatus(context, appearance)
-					})
-				}
-				application.preview(context)
-				application.previewStatus(context, compact, height, appearance)
-			})
+	ui.Row(context).Fill().Gap(0).Background(appearance.theme.Background).Children(func() {
+		application.sidebarLayout(context, compact, height)
+		ui.Column(context).Grow(1).MinWidth(0).FillHeight().Children(func() {
+			application.preview(context)
 		})
 	})
+
 	ui.DialogBase(context, &application.settingsOpen, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(0, 0, 0, 0.45))
 		panel.Column().Size(min(400, max(1, width-24)), min(680, max(1, height-24))).Background(appearance.card).Border(1, appearance.stroke).Radius(12).Label(text(context, "Capture settings dialog")).Children(func() {
 			ui.Row(context).FillWidth().Shrink(0).Padding(12).Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.Text(context, text(context, "Settings")).FontSize(20).FontWeight(600).Grow(1).MinWidth(0).SingleLine()
 				application.themeSwitch(context)
-				if ui.Button(context.Key("dialog-refresh"), text(context, "Refresh")).Disabled(application.busy || application.running).Clicked() {
-					application.refresh()
-				}
+
 				if ui.Button(context.Key("close-settings"), text(context, "Close")).Clicked() {
 					application.settingsOpen = false
 				}
 			})
-			application.settingsBody(context)
+			ui.Scroll(context.Key("compact-settings-scroll")).Label(text(context, "Settings panel content")).FillWidth().Grow(1).MinHeight(0).Children(func() {
+				ui.Column(context).FillWidth().Children(func() {
+					ui.Column(context).FillWidth().Height(280).Shrink(0).Children(func() { application.settingsBody(context) })
+					application.sidebarActions(context)
+					application.previewStatus(context, true, height, appearance)
+				})
+			})
 		})
 	})
 	application.aboutDialogs(context, width, height)

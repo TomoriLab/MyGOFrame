@@ -82,17 +82,13 @@ func TestLocalizedToolbarAndDialogsFit(t *testing.T) {
 				tester := ui.NewTester(application.view, size[0], size[1])
 				tester.SetLocale(locale)
 				translate := func(value string) string { return localization.Text(locale, value) }
-				for _, label := range []string{"Quick capture controls", "Quick preset selection", "Preset video action", "Recording action", "Fullscreen action"} {
-					bounds, found := tester.Find(translate(label))
-					if !found || bounds.X < 0 || bounds.Y < 0 || bounds.X+bounds.W > float32(size[0])+1 || bounds.Y+bounds.H > float32(size[1])+1 {
-						t.Fatalf("%s exceeds %v: %+v", label, size, bounds)
-					}
-				}
 				if size[0] < 800 {
-					if err := tester.Click(translate("Settings")); err != nil {
+					if err := tester.Click(translate("Toggle sidebar")); err != nil {
 						t.Fatal(err)
 					}
 				}
+				requireInside(t, tester, translate("Toggle sidebar"), ui.Rect{W: float32(size[0]), H: float32(size[1])})
+
 				if _, found := tester.Find(translate("App language")); found {
 					t.Fatal("language selector leaked into the overview")
 				}
@@ -109,7 +105,9 @@ func TestLocalizedToolbarAndDialogsFit(t *testing.T) {
 				if !tester.HasText(translate("Developer")) {
 					t.Fatal("about dialog untranslated")
 				}
-				revealAboutControl(t, tester, translate("About information"), translate("View MyGOFrame license"))
+				if size[1]-24 < 560 {
+					revealAboutControl(t, tester, translate("About information"), translate("View MyGOFrame license"))
+				}
 				if err := tester.Click(translate("View MyGOFrame license")); err != nil {
 					t.Fatal(err)
 				}

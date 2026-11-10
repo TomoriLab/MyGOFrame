@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,24 +25,25 @@ type command struct {
 }
 
 type captureWorker struct {
-	diagnostics    desktopapp.Diagnostics
-	engine         sessionapp.Engine
-	window         *mygo.Window
-	presentation   atomic.Pointer[mygo.Window]
-	application    *applicationState
-	commands       chan command
-	stop           chan struct{}
-	done           chan struct{}
-	closing        atomic.Bool
-	closeOnce      sync.Once
-	controls       atomic.Pointer[session.AudioControls]
-	controlChanged chan struct{}
-	frames         latestSlot[capture.Frame]
-	afterSequence  uint64
-	frameEvents    *os.File
-	frameReady     chan struct{}
-	eventErrors    chan error
-	readerDone     chan struct{}
+	diagnostics       desktopapp.Diagnostics
+	engine            sessionapp.Engine
+	window            *mygo.Window
+	presentation      atomic.Pointer[mygo.Window]
+	application       *applicationState
+	commands          chan command
+	stop              chan struct{}
+	done              chan struct{}
+	closing           atomic.Bool
+	closeOnce         sync.Once
+	controls          atomic.Pointer[session.AudioControls]
+	controlChanged    chan struct{}
+	frames            latestSlot[capture.Frame]
+	afterSequence     uint64
+	frameEvents       *os.File
+	frameReady        chan struct{}
+	eventErrors       chan error
+	readerDone        chan struct{}
+	deviceWatcherDone chan struct{}
 }
 
 func newWorker(engine sessionapp.Engine, window *mygo.Window, application *applicationState) (*captureWorker, error) {
@@ -51,6 +53,8 @@ func newWorker(engine sessionapp.Engine, window *mygo.Window, application *appli
 	}
 	worker := &captureWorker{diagnostics: application.services.Diagnostics, engine: engine, window: window, application: application, commands: make(chan command, 16), stop: make(chan struct{}), done: make(chan struct{}), controlChanged: make(chan struct{}, 1), frameEvents: events, frameReady: make(chan struct{}, 1), eventErrors: make(chan error, 1), readerDone: make(chan struct{})}
 	worker.setAudioControls(session.AudioControls{Volume: application.volume / 100, Muted: application.muted})
+	worker.deviceWatcherDone = make(chan struct{})
+	go worker.watchDevices()
 	go worker.readFrameEvents()
 	go worker.run()
 	return worker, nil
@@ -170,6 +174,9 @@ func (worker *captureWorker) readFrameEvents() {
 func (worker *captureWorker) close() {
 	worker.closeOnce.Do(func() { worker.closing.Store(true); close(worker.stop) })
 	<-worker.done
+	if worker.deviceWatcherDone != nil {
+		<-worker.deviceWatcherDone
+	}
 }
 
 func (application *applicationState) submit(notice string, run func(*captureWorker) (func(*applicationState), error)) {
@@ -250,5 +257,34 @@ func statusSummary(status session.SessionSnapshot, contexts ...*ui.Context) stri
 func (worker *captureWorker) debugEvent(name, detail string) {
 	if worker.diagnostics != nil {
 		worker.diagnostics.Record(name, detail)
+	}
+}
+
+// Device enumeration runs separately so PipeWire discovery cannot delay frame delivery.
+func (worker *captureWorker) watchDevices() {
+	defer close(worker.deviceWatcherDone)
+	if worker.application.services.VideoDevices == nil || worker.application.services.AudioDevices == nil {
+		return
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-worker.stop:
+			return
+		case <-ticker.C:
+			devices, videoError := worker.application.services.VideoDevices()
+			audio, audioError := worker.application.services.AudioDevices()
+			worker.post(func(application *applicationState) {
+				if application.busy || application.presetBusy || application.closing {
+					return
+				}
+				videoChanged := videoError == nil && !reflect.DeepEqual(devices, application.devices)
+				audioChanged := audioError == nil && !reflect.DeepEqual(audio, application.audioDevices)
+				if videoChanged || audioChanged {
+					application.refresh()
+				}
+			})
+		}
 	}
 }

@@ -43,6 +43,13 @@
   </supports>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.2.1" date="2026-11-11" type="development">
+      <description>
+        <p>Rework the collapsible native sidebar, capture controls, and capture information.</p>
+        <p>Detect capture devices automatically and preserve capture status during recording.</p>
+        <p>Improve app information and nested license dialogs and persist the selected theme.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-11-11" type="development">
       <description>
         <p>Add English, Korean, and Japanese localization with native app-language selection.</p>

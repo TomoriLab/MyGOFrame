@@ -181,7 +181,7 @@
   "Volume {level}%": "음량 {level}%",
   "Captured {frames, plural, one {# frame} other {# frames}} · skipped {dropped, plural, one {# frame} other {# frames}}": "캡쳐 {frames}프레임 · 건너뜀 {dropped}프레임",
   "Recording failed: {error}": "녹화 실패: {error}",
-  "Recording {phase} · {seconds} s · {size} MiB · {frames, plural, one {# frame} other {# frames}} · {dropped} dropped": "녹화 {phase} · {seconds}초 · {size} MiB · {frames}프레임 · 누락 {dropped}",
+  "Recording {phase} · {seconds} s · {size} MiB · {frames, plural, one {# frame} other {# frames}} · {dropped} dropped": "{phase} · {seconds}초 · {size} MiB · {frames}프레임 · 누락 {dropped}",
   "Version {version}": "버전 {version}",
   "Build {revision}{modified}": "빌드 {revision}{modified}",
   " (modified)": " (수정됨)",
@@ -232,5 +232,12 @@
   "Clear diagnostic history": "진단 기록 지우기",
   "{count, plural, one {# event retained} other {# events retained}} · {dropped} discarded": "기록 {count}개 · 버림 {dropped}개",
   "Language and debugging": "언어와 디버그 설정",
-  "Settings detail": "설정 내용"
+  "Settings detail": "설정 내용",
+  "Toggle sidebar": "사이드바 접기/펼치기",
+  "Capture controls": "캡쳐 제어",
+  "Capture information": "캡쳐 정보",
+  "License and acknowledgments": "라이선스 및 고지",
+  "Dependencies and licenses": "의존성 및 라이선스",
+  "Third-party components retain their respective licenses.": "서드파티 구성요소에는 각각의 라이선스가 적용됩니다.",
+  "Settings panel content": "설정 패널 내용"
 }

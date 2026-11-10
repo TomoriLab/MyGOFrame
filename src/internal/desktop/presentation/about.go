@@ -37,7 +37,25 @@ func (application *applicationState) aboutDialogs(context *ui.Context, width, he
 		panel.Column().Size(panelWidth, panelHeight).Background(palette.card).Border(1, palette.stroke).Radius(12).Label(text(context, "About dialog")).Children(func() {
 			modalHeader(context, "About MyGOFrame", "Close app information", func() { application.aboutOpen = false })
 			ui.Scroll(context.Key("about-scroll")).FillWidth().Grow(1).MinHeight(0).Label(text(context, "About information")).Children(func() {
-				ui.Column(context).FillWidth().Padding(16).Gap(16).Children(func() { application.aboutContents(context) })
+				ui.Column(context).FillWidth().Padding(16).Gap(16).Children(func() {
+					application.aboutContents(context)
+					if panelHeight < 560 {
+						application.aboutLicenseBlock(context)
+					}
+				})
+			})
+			if panelHeight >= 560 {
+				ui.Column(context).FillWidth().Shrink(0).Padding(16).Children(func() { application.aboutLicenseBlock(context) })
+			}
+		})
+	})
+	ui.DialogBase(context.Key("notices-modal"), &application.noticesOpen, func(backdrop, panel ui.Element) {
+		backdrop.Background(ui.RGBA(0, 0, 0, .5))
+		panelWidth, panelHeight := modalSize(width, height, 760, 720)
+		panel.Column().Size(panelWidth, panelHeight).Background(palette.card).Border(1, palette.stroke).Radius(12).Label(text(context, "Open source and runtime notices")).Children(func() {
+			modalHeader(context, "Open source and runtime notices", "Close", func() { application.noticesOpen = false })
+			ui.Scroll(context.Key("notices-scroll")).FillWidth().Grow(1).MinHeight(0).Label(text(context, "Search licenses")).Children(func() {
+				ui.Column(context).FillWidth().Padding(16).Gap(16).Children(func() { application.noticeContents(context) })
 			})
 		})
 	})
@@ -68,6 +86,7 @@ func (application *applicationState) aboutDialogs(context *ui.Context, width, he
 		})
 	})
 	if !application.aboutOpen {
+		application.noticesOpen = false
 		application.licenseOpen = false
 	}
 }
@@ -98,7 +117,7 @@ func (application *applicationState) aboutContents(context *ui.Context) {
 		return
 	}
 	ui.Row(context).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
-		ui.Image(context, applicationBranding().logo).Size(48, 48).Radius(10).Clip()
+		ui.Image(context, applicationBranding().logo).Size(96, 96).Shrink(0).Fit(ui.Contain).Radius(20).Clip().Label(text(context, "MyGOFrame logo"))
 		ui.Column(context).Grow(1).MinWidth(0).Gap(4).Children(func() {
 			ui.Text(context, "MyGOFrame").FontSize(22).FontWeight(600)
 			ui.Text(context, text(context, message(context, "Version {version}", map[string]any{"version": catalog.Version}))).FillWidth().FontSize(13)
@@ -126,14 +145,38 @@ func (application *applicationState) aboutContents(context *ui.Context) {
 		ui.Link(context, text(context, catalog.Contact), "mailto:"+catalog.Contact).FontSize(13).TextColor(aboutLinkColor(context.Theme().Dark))
 		ui.Link(context, text(context, "Project and source code"), catalog.ProjectURL).FontSize(13).TextColor(aboutLinkColor(context.Theme().Dark))
 	})
-	ui.Row(context).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(context, text(context, "Application license: MIT")).Grow(1).MinWidth(0).FontSize(13)
-		if ui.Button(context.Key("application-license"), text(context, "View license")).Label(text(context, "View MyGOFrame license")).Clicked() {
-			application.showComponentLicense(catalog.Components[0])
+}
+
+func (application *applicationState) aboutLicenseBlock(context *ui.Context) {
+	catalog := application.aboutCatalog
+	if catalog == nil {
+		return
+	}
+	ui.Column(context).FillWidth().Padding(16).Gap(12).Background(context.Theme().Surface).Border(1, context.Theme().Border).Radius(8).Children(func() {
+		ui.Text(context, text(context, "License and acknowledgments")).FillWidth().FontSize(16).FontWeight(600)
+		ui.Text(context, "MIT License · Copyright © 2026 "+catalog.Developer).FillWidth().FontSize(14)
+		helpText(context, "Third-party components retain their respective licenses.")
+		buttons := ui.Column(context).FillWidth().Gap(8)
+		width, _ := context.Size()
+		if width >= 700 {
+			buttons.Row()
 		}
+		buttons.Children(func() {
+			if ui.Button(context.Key("application-license"), text(context, "View license")).Label(text(context, "View MyGOFrame license")).Clicked() {
+				application.showComponentLicense(catalog.Components[0])
+			}
+			if ui.Button(context.Key("open-notices"), text(context, "Dependencies and licenses")).Label(text(context, "Open source and runtime notices")).Clicked() {
+				application.noticesOpen = true
+			}
+		})
 	})
-	ui.Divider(context).FillWidth()
-	ui.Text(context, text(context, "Open source and runtime notices")).FontSize(16).FontWeight(600)
+}
+
+func (application *applicationState) noticeContents(context *ui.Context) {
+	catalog := application.aboutCatalog
+	if catalog == nil {
+		return
+	}
 	helpText(context, message(context, "{count, plural, one {# component.} other {# components.}} Bundled and system-linked components retain their own terms.", map[string]any{"count": len(catalog.Components) - 1}))
 	ui.TextInput(context.Key("license-search"), &application.licenseSearch).FillWidth().Placeholder(text(context, "Search component or license")).Label(text(context, "Search licenses"))
 	query := strings.ToLower(strings.TrimSpace(application.licenseSearch))
