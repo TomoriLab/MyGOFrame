@@ -38,7 +38,7 @@ The Linux backends are NVIDIA NVENC, Intel QSV, and AMD VA-API on supporting dev
 A local Debian sid amd64 package can be built with `make deb`. Install the result with:
 
 ```sh
-sudo apt install ./build/debian/mygoframe_0.1.2-1_amd64.deb
+sudo apt install ./build/debian/mygoframe_0.1.3-1_amd64.deb
 ```
 
 The package includes the Swift runtime and installs a desktop launcher. Build requirements, source rebuilding, and verification are documented in [Debian packaging](docs/debian.md).

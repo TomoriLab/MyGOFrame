@@ -61,7 +61,7 @@ func TestAboutNavigationAndNestedLicenseDialogs(t *testing.T) {
 				window := ui.Rect{W: float32(size[0]), H: float32(size[1])}
 				panel := requireInside(t, tester, "About dialog", window)
 				requireInside(t, tester, "Close app information", panel)
-				if application.settingsPage != -1 || !application.aboutOpen || !tester.HasText("Euiseo Cha / Tomori Lab") || !tester.HasText("escha@zeroday0619.dev") {
+				if application.settingsPage != -1 || !application.aboutOpen || !tester.HasText("zeroday0619 / Tomori Lab") || !tester.HasText("zero@tomori.dev") {
 					t.Fatal("About did not open a modal with repository developer metadata")
 				}
 				revealAboutControl(t, tester, "About information", "View MyGOFrame license")

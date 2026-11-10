@@ -1,7 +1,7 @@
 Source: mygoframe
 Section: video
 Priority: optional
-Maintainer: Euiseo Cha <escha@zeroday0619.dev>
+Maintainer: zeroday0619 <zero@tomori.dev>
 Build-Depends:
  debhelper-compat (= 13),
  bindgen,

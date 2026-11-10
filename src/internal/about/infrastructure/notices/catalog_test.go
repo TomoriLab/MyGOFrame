@@ -11,7 +11,7 @@ func TestEmbeddedNoticesAreCompleteAndOffline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if catalog.Developer != "Euiseo Cha" || catalog.Organization != "Tomori Lab" || catalog.Contact != "escha@zeroday0619.dev" || catalog.Version == "" {
+	if catalog.Developer != "zeroday0619" || catalog.Organization != "Tomori Lab" || catalog.Contact != "zero@tomori.dev" || catalog.Version == "" {
 		t.Fatal("application metadata is missing")
 	}
 	required := map[string]bool{

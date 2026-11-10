@@ -32,8 +32,8 @@ is required; Debian rustc/cargo or an installed rustup toolchain can be used.
 
 To rebuild the prepared source package:
 
-  dpkg-source -x mygoframe_0.1.2-1.dsc
-  cd mygoframe-0.1.2
+  dpkg-source -x mygoframe_0.1.3-1.dsc
+  cd mygoframe-0.1.3
   DEB_BUILD_PROFILES=pkg.mygoframe.external-toolchains dpkg-buildpackage -b -us -uc
 
 Production sources use the domain-based layout under src/: src/internal/ for

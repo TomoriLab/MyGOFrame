@@ -6,7 +6,7 @@
   <metadata_license>MIT</metadata_license>
   <project_license>MIT</project_license>
   <developer id="dev.tomori">
-    <name>Euiseo Cha / Tomori Lab</name>
+    <name>zeroday0619 / Tomori Lab</name>
   </developer>
   <description>
     <p>
@@ -43,6 +43,12 @@
   </supports>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.1.3" date="2026-11-10" type="development">
+      <description>
+        <p>Update developer attribution and the contact email in app information
+        and license notices.</p>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-11-10" type="development">
       <description>
         <p>Hardware recording, saved presets, native app and license dialogs,

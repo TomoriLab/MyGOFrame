@@ -3,7 +3,8 @@ Upstream-Name: MyGOFrame
 Source: https://github.com/TomoriLab/MyGOFrame
 
 Files: *
-Copyright: 2026 MyGOFrame contributors
+Copyright: 2026 zeroday0619 <zero@tomori.dev>
+           2026 MyGOFrame contributors
 License: Expat
 
 Files: vendor/github.com/egoist/mygo/*

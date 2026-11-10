@@ -230,7 +230,7 @@ def _prepare(go="go", flags=()):
     revision = command(["git", "rev-parse", "--short=12", "HEAD"], root)
     modified = bool(command(["git", "status", "--porcelain", "--untracked-files=normal"], root))
     document = {"schemaVersion": 1, "version": version, "revision": revision, "modified": modified,
-                "developer": "Euiseo Cha", "contact": "escha@zeroday0619.dev", "organization": "Tomori Lab",
+                "developer": "zeroday0619", "contact": "zero@tomori.dev", "organization": "Tomori Lab",
                 "projectURL": "https://github.com/TomoriLab/MyGOFrame", "components": catalog.components,
                 "documents": catalog.documents}
     data = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
