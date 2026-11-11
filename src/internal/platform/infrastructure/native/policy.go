@@ -16,16 +16,18 @@ import (
 )
 
 const (
-	modeVariable          = "MYGOFRAME_NATIVE_RUNTIME"
-	directoryVariable     = "MYGOFRAME_NATIVE_RUNTIME_DIR"
-	activeVariable        = "MYGOFRAME_NATIVE_RUNTIME_ACTIVE"
-	moduleVariable        = "GTK_PATH"
-	moduleActiveVariable  = "MYGOFRAME_GTK_MODULE_RUNTIME_ACTIVE"
-	textureVariable       = "MYGO_GL_GLES_OPAQUE_TEXTURE"
-	textureActiveVariable = "MYGOFRAME_GLES_TEXTURE_RUNTIME_ACTIVE"
-	loaderVariable        = "LD_LIBRARY_PATH"
-	maximumManifest       = 1024 * 1024
-	maximumLibrary        = 128 * 1024 * 1024
+	modeVariable             = "MYGOFRAME_NATIVE_RUNTIME"
+	directoryVariable        = "MYGOFRAME_NATIVE_RUNTIME_DIR"
+	activeVariable           = "MYGOFRAME_NATIVE_RUNTIME_ACTIVE"
+	moduleVariable           = "GTK_PATH"
+	moduleActiveVariable     = "MYGOFRAME_GTK_MODULE_RUNTIME_ACTIVE"
+	eventPaintVariable       = "MYGO_GDK_EVENT_DRIVEN_PAINT"
+	eventPaintActiveVariable = "MYGOFRAME_EVENT_PAINT_RUNTIME_ACTIVE"
+	textureVariable          = "MYGO_GL_GLES_OPAQUE_TEXTURE"
+	textureActiveVariable    = "MYGOFRAME_GLES_TEXTURE_RUNTIME_ACTIVE"
+	loaderVariable           = "LD_LIBRARY_PATH"
+	maximumManifest          = 1024 * 1024
+	maximumLibrary           = 128 * 1024 * 1024
 )
 
 type library struct {
@@ -120,8 +122,9 @@ func plan(config configuration) (*launch, error) {
 		if err != nil {
 			return nil, err
 		}
-		environment, textureChanged := opaqueTextureEnvironment(environment, metadata.Features["glesOpaqueTexture"])
-		if !changed && !moduleChanged && !textureChanged {
+		environment, textureChanged := capabilityEnvironment(environment, metadata.Features["glesOpaqueTexture"], textureVariable, textureActiveVariable)
+		environment, eventPaintChanged := capabilityEnvironment(environment, metadata.Features["eventDrivenPaint"], eventPaintVariable, eventPaintActiveVariable)
+		if !changed && !moduleChanged && !textureChanged && !eventPaintChanged {
 			return nil, nil
 		}
 		return &launch{Environment: environment, Directory: directory}, nil
@@ -130,7 +133,7 @@ func plan(config configuration) (*launch, error) {
 }
 
 func systemLaunch(environment []string, values map[string]string) *launch {
-	if values[activeVariable] == "" && values[moduleActiveVariable] == "" && values[textureActiveVariable] == "" {
+	if values[activeVariable] == "" && values[moduleActiveVariable] == "" && values[textureActiveVariable] == "" && values[eventPaintActiveVariable] == "" {
 		return nil
 	}
 	result := environment
@@ -140,33 +143,34 @@ func systemLaunch(environment []string, values map[string]string) *launch {
 		result = replaceVariable(result, loaderVariable, path, path == "")
 	}
 	result = removeModuleEnvironment(result)
-	result, _ = opaqueTextureEnvironment(result, false)
+	result, _ = capabilityEnvironment(result, false, textureVariable, textureActiveVariable)
+	result, _ = capabilityEnvironment(result, false, eventPaintVariable, eventPaintActiveVariable)
 	return &launch{Environment: result}
 }
 
-// Only a verified runtime advertises the GLES opaque texture path; explicit overrides remain owned by the caller.
-func opaqueTextureEnvironment(environment []string, available bool) ([]string, bool) {
+// Verified runtime capabilities preserve explicit caller overrides and retire managed settings on downgrade.
+func capabilityEnvironment(environment []string, available bool, settingVariable, ownershipVariable string) ([]string, bool) {
 	values := environmentValues(environment)
-	managed := values[textureActiveVariable] != ""
-	if managed && values[textureVariable] != "1" {
+	managed := values[ownershipVariable] != ""
+	if managed && values[settingVariable] != "1" {
 		// A caller changed the inherited setting after activation and now owns it.
-		return replaceVariable(environment, textureActiveVariable, "", true), true
+		return replaceVariable(environment, ownershipVariable, "", true), true
 	}
 	if !available {
 		if !managed {
 			return environment, false
 		}
-		result := replaceVariable(environment, textureVariable, "", true)
-		return replaceVariable(result, textureActiveVariable, "", true), true
+		result := replaceVariable(environment, settingVariable, "", true)
+		return replaceVariable(result, ownershipVariable, "", true), true
 	}
-	if _, explicit := values[textureVariable]; explicit && !managed {
+	if _, explicit := values[settingVariable]; explicit && !managed {
 		return environment, false
 	}
-	if managed && values[textureVariable] == "1" {
+	if managed && values[settingVariable] == "1" {
 		return environment, false
 	}
-	result := replaceVariable(environment, textureVariable, "1", false)
-	return replaceVariable(result, textureActiveVariable, "1", false), true
+	result := replaceVariable(environment, settingVariable, "1", false)
+	return replaceVariable(result, ownershipVariable, "1", false), true
 }
 
 func removeModuleEnvironment(environment []string) []string {

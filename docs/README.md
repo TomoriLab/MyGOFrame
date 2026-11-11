@@ -5,6 +5,7 @@ Read [Architecture and memory ownership](architecture.md) before changing the Go
 ## Language boundaries
 
 - [Go, Swift, and Rust responsibilities](language-boundaries.md): session policy, versioned handles, resource ownership, and frame notifications.
+- [Experimental recording transfers](recording-gpu-transfer.md): CUDA and Vulkan capability probing, bounded capture leases, and fallbacks.
 - [Recording](recording.md): GPU encoding, capture audio, file ownership, and validation.
 - [Settings preset storage](presets.md): native controls, persistent configuration, validation, and recovery.
 
@@ -42,6 +43,7 @@ Read [Architecture and memory ownership](architecture.md) before changing the Go
 | Swift domain rules, application services, and native adapters | `src/swift/<domain>/` |
 | Rust capture, audio, recording, and rendering domains | `src/rust/src/<domain>/` |
 | Native ABI declarations | `src/abi/` |
+| Rust public-API integration tests | `src/rust/tests/` |
 | Retained Swift media regression implementation | `tests/legacy/swift/` |
 | Build and verification targets | `Makefile` |
 

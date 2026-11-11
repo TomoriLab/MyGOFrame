@@ -3,6 +3,12 @@ use crate::{capture::domain::format::DmaFormat, ffi};
 use std::ffi::{CStr, CString};
 use std::ptr;
 
+// Capture timestamps need sub-frame precision independently of the nominal encoder rate.
+pub(super) const VIDEO_TIME_BASE: ffi::AVRational = ffi::AVRational {
+    num: 1,
+    den: 1_000_000,
+};
+
 pub(crate) fn checked(code: i32, operation: &str) -> Result<(), String> {
     if code >= 0 {
         return Ok(());
@@ -61,7 +67,7 @@ impl Drop for Packet {
         }
     }
 }
-struct Buffer(*mut ffi::AVBufferRef);
+pub(super) struct Buffer(pub(super) *mut ffi::AVBufferRef);
 impl Drop for Buffer {
     fn drop(&mut self) {
         unsafe {
@@ -82,6 +88,12 @@ pub(crate) struct VideoEncoder {
     pub context: Codec,
     pub frame: Frame,
     hardware: Option<Frame>,
+    cuda_experiment: bool,
+    experiment_mode: String,
+    direct_import: bool,
+    vulkan: Option<super::vulkan_upload::VulkanUpload>,
+    transfer_name: String,
+    vulkan_disabled: bool,
     scaler: *mut ffi::SwsContext,
     source_format: ffi::AVPixelFormat,
     source_stride: i32,
@@ -104,7 +116,39 @@ impl Drop for VideoEncoder {
 
 impl VideoEncoder {
     pub fn new(config: &Configuration, device: &Device) -> Result<Self, String> {
+        let experiment_mode = std::env::var("MYGOFRAME_EXPERIMENTAL_RECORDING_TRANSFER")
+            .unwrap_or_else(|_| {
+                if std::env::var("MYGOFRAME_EXPERIMENTAL_CUDA_RECORDING").as_deref() == Ok("1") {
+                    "cuda".into()
+                } else {
+                    "off".into()
+                }
+            });
+        Self::with_transfer_mode(config, device, experiment_mode)
+    }
+
+    pub fn probe(config: &Configuration, device: &Device) -> Result<Self, String> {
+        // Codec discovery must not create transfer devices whose teardown stalls active recording.
+        Self::with_transfer_mode(config, device, "off".into())
+    }
+
+    fn with_transfer_mode(
+        config: &Configuration,
+        device: &Device,
+        experiment_mode: String,
+    ) -> Result<Self, String> {
         super::runtime::prepare(&device.backend)?;
+        if !["off", "auto", "cuda", "vulkan"].contains(&experiment_mode.as_str()) {
+            return Err(
+                "Experimental recording transfer must be off, auto, cuda, or vulkan.".into(),
+            );
+        }
+        let cuda_experiment = experiment_mode != "off";
+        if cuda_experiment
+            && (device.backend != "nvenc" || config.video.fourcc != u32::from_le_bytes(*b"NV12"))
+        {
+            return Err("Experimental CUDA recording requires NVIDIA NVENC and NV12 input.".into());
+        }
         let compressed = config.video.fourcc == u32::from_le_bytes(*b"MJPG");
         let source = if compressed {
             DmaFormat::Nv12
@@ -162,10 +206,7 @@ impl VideoEncoder {
             (*context.0).sample_aspect_ratio = ffi::AVRational { num: 1, den: 1 };
             (*context.0).width = width;
             (*context.0).height = height;
-            (*context.0).time_base = ffi::AVRational {
-                num: config.video.interval_numerator as i32,
-                den: config.video.interval_denominator as i32,
-            };
+            (*context.0).time_base = VIDEO_TIME_BASE;
             (*context.0).framerate = ffi::AVRational {
                 num: config.video.interval_denominator as i32,
                 den: config.video.interval_numerator as i32,
@@ -217,8 +258,11 @@ impl VideoEncoder {
             )?;
             option(&context, c"rc-lookahead", "0")?;
             option(&context, c"zerolatency", "1")?;
-        } else {
-            let kind = if device.backend == "qsv" {
+        }
+        if device.backend != "nvenc" || cuda_experiment {
+            let kind = if cuda_experiment {
+                ffi::AVHWDeviceType_AV_HWDEVICE_TYPE_CUDA
+            } else if device.backend == "qsv" {
                 ffi::AVHWDeviceType_AV_HWDEVICE_TYPE_QSV
             } else {
                 ffi::AVHWDeviceType_AV_HWDEVICE_TYPE_VAAPI
@@ -252,7 +296,9 @@ impl VideoEncoder {
             if frames.0.is_null() {
                 return Err("Unable to allocate hardware recording surfaces.".into());
             }
-            let format = if device.backend == "qsv" {
+            let format = if cuda_experiment {
+                ffi::AVPixelFormat_AV_PIX_FMT_CUDA
+            } else if device.backend == "qsv" {
                 ffi::AVPixelFormat_AV_PIX_FMT_QSV
             } else {
                 ffi::AVPixelFormat_AV_PIX_FMT_VAAPI
@@ -330,10 +376,16 @@ impl VideoEncoder {
         if scaler.is_null() {
             return Err("Unable to create the recording color converter.".into());
         }
-        let value = Self {
+        let mut value = Self {
             context,
             frame,
             hardware,
+            cuda_experiment,
+            experiment_mode,
+            direct_import: true,
+            vulkan: None,
+            transfer_name: String::new(),
+            vulkan_disabled: false,
             scaler,
             source_format,
             source_stride: config.video.bytes_per_line as i32,
@@ -368,7 +420,185 @@ impl VideoEncoder {
             },
             "Set recording color range",
         )?;
+        if value.cuda_experiment {
+            let hardware = value
+                .hardware
+                .as_ref()
+                .ok_or("Missing CUDA recording surface.")?;
+            unsafe {
+                checked(
+                    ffi::av_hwframe_get_buffer((*value.context.0).hw_frames_ctx, hardware.0, 0),
+                    "Warm recording CUDA surface pool",
+                )?;
+            }
+            if value.experiment_mode != "cuda" {
+                match super::vulkan_upload::VulkanUpload::new(hardware, width, height) {
+                    Ok(mut vulkan) => {
+                        // Prime the driver transfer path before capture can fill the bounded queue.
+                        unsafe {
+                            for (plane, rows, byte) in [
+                                (0, height as usize, 16),
+                                (1, (height as usize).div_ceil(2), 128),
+                            ] {
+                                std::ptr::write_bytes(
+                                    (*value.frame.0).data[plane],
+                                    byte,
+                                    (*value.frame.0).linesize[plane] as usize * rows,
+                                );
+                            }
+                        }
+                        if let Err(error) = vulkan.transfer(
+                            &value.frame,
+                            None,
+                            hardware,
+                            stride as usize,
+                            layout.uv_offset as usize,
+                            true,
+                        ) {
+                            eprintln!("Experimental recording Vulkan warmup failed: {error}");
+                        }
+                        value.vulkan = Some(vulkan);
+                    }
+                    Err(error) => eprintln!("Experimental recording Vulkan unavailable: {error}"),
+                }
+            }
+        }
         Ok(value)
+    }
+
+    pub fn transfer_name(&self) -> &str {
+        if self.cuda_experiment {
+            if self.transfer_name.is_empty() {
+                "experimental-pending"
+            } else {
+                &self.transfer_name
+            }
+        } else {
+            "CPU staging to hardware encoder"
+        }
+    }
+
+    pub fn experimental(&self) -> bool {
+        self.cuda_experiment
+    }
+
+    pub fn submit_shared(
+        &mut self,
+        shared: &std::sync::Arc<dyn crate::media::infrastructure::packets::SharedVideoFrame>,
+        pts: i64,
+    ) -> Result<bool, String> {
+        if !self.cuda_experiment {
+            return Err("Shared recording input requires experimental transfer.".into());
+        }
+        self.submit_experimental(shared.bytes(), Some(shared), pts)
+    }
+
+    fn submit_experimental(
+        &mut self,
+        bytes: &[u8],
+        shared: Option<
+            &std::sync::Arc<dyn crate::media::infrastructure::packets::SharedVideoFrame>,
+        >,
+        pts: i64,
+    ) -> Result<bool, String> {
+        if pts <= self.last_pts {
+            return Ok(false);
+        }
+        if bytes.len() < self.required_bytes {
+            return Err("Truncated experimental NV12 recording input.".into());
+        }
+        let source = Frame::new()?;
+        let hardware = self
+            .hardware
+            .as_ref()
+            .ok_or("Missing CUDA recording surface.")?;
+        unsafe {
+            (*source.0).format = self.source_format;
+            (*source.0).width = (*self.context.0).width;
+            (*source.0).height = self.height;
+            (*source.0).data[0] = bytes.as_ptr().cast_mut();
+            (*source.0).data[1] = bytes.as_ptr().add(self.uv_offset).cast_mut();
+            (*source.0).linesize[0] = self.source_stride;
+            (*source.0).linesize[1] = self.source_stride;
+            ffi::av_frame_unref(hardware.0);
+            checked(
+                ffi::av_hwframe_get_buffer((*self.context.0).hw_frames_ctx, hardware.0, 0),
+                "Acquire experimental CUDA surface",
+            )?;
+        }
+        let width = unsafe { (*self.context.0).width as usize };
+        let mut transfer = None;
+        if self.direct_import && self.experiment_mode != "vulkan" {
+            if let Some(shared) = shared {
+                let context = super::cuda_host::Context::enter(hardware)?;
+                match shared.prepare_gpu_read().and_then(|_| {
+                    context.import(
+                        shared.as_ref(),
+                        hardware,
+                        self.source_stride as usize,
+                        self.uv_offset,
+                        width,
+                        self.height as usize,
+                    )
+                }) {
+                    Ok(()) => transfer = Some("cuda-dmabuf"),
+                    Err(error) => {
+                        self.direct_import = false;
+                        eprintln!("Experimental recording direct DMA-BUF disabled: {error}");
+                    }
+                }
+            }
+        }
+        if transfer.is_none() && self.experiment_mode != "cuda" && !self.vulkan_disabled {
+            if let Some(vulkan) = &mut self.vulkan {
+                match vulkan.transfer(
+                    &source,
+                    shared,
+                    hardware,
+                    self.source_stride as usize,
+                    self.uv_offset,
+                    self.experiment_mode == "vulkan",
+                ) {
+                    Ok(name) => transfer = Some(name),
+                    Err(error) => {
+                        eprintln!("Experimental recording Vulkan fallback: {error}");
+                        // Retire the failed device after recording rather than stalling capture on driver teardown.
+                        self.vulkan_disabled = true;
+                    }
+                }
+            }
+        }
+        let transfer = if let Some(name) = transfer {
+            name
+        } else {
+            let context = super::cuda_host::Context::enter(hardware)?;
+            context.upload(
+                bytes,
+                hardware,
+                self.source_stride as usize,
+                self.uv_offset,
+                width,
+                self.height as usize,
+            )?;
+            "cuda-host-upload"
+        };
+        if self.transfer_name != transfer {
+            self.transfer_name = transfer.into();
+            eprintln!("Experimental recording transfer active: {transfer}");
+        }
+        unsafe {
+            (*hardware.0).pts = pts;
+            (*hardware.0).color_range = (*self.context.0).color_range;
+            (*hardware.0).colorspace = (*self.context.0).colorspace;
+            (*hardware.0).color_primaries = (*self.context.0).color_primaries;
+            (*hardware.0).color_trc = (*self.context.0).color_trc;
+            checked(
+                ffi::avcodec_send_frame(self.context.0, hardware.0),
+                "Submit experimental GPU frame",
+            )?;
+        }
+        self.last_pts = pts;
+        Ok(true)
     }
 
     pub fn decoder_name(&self) -> &str {
@@ -385,6 +615,9 @@ impl VideoEncoder {
             && bytes.len() < self.required_bytes + ffi::AV_INPUT_BUFFER_PADDING_SIZE as usize
         {
             return Err("Truncated or unpadded recording input.".into());
+        }
+        if self.cuda_experiment {
+            return self.submit_experimental(bytes, None, pts);
         }
         unsafe {
             checked(
@@ -737,13 +970,4 @@ fn expand_limited_rgb(value: u8) -> u8 {
 }
 
 #[cfg(test)]
-mod recording_color_tests {
-    #[test]
-    fn limited_rgb_endpoints_and_midpoint() {
-        assert_eq!(super::expand_limited_rgb(0), 0);
-        assert_eq!(super::expand_limited_rgb(16), 0);
-        assert_eq!(super::expand_limited_rgb(126), 128);
-        assert_eq!(super::expand_limited_rgb(235), 255);
-        assert_eq!(super::expand_limited_rgb(255), 255);
-    }
-}
+mod tests;

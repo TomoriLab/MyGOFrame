@@ -27,9 +27,18 @@ pub(crate) fn video_timestamp(buffer: &ffi::v4l2_buffer) -> u64 {
     }
 }
 
+/// A completed capture allocation remains immutable until the final lease is released.
+pub(crate) trait SharedVideoFrame: Send + Sync {
+    fn bytes(&self) -> &[u8];
+    fn descriptor(&self) -> std::os::fd::BorrowedFd<'_>;
+    fn allocation_size(&self) -> usize;
+    fn prepare_gpu_read(&self) -> Result<(), String>;
+}
+
 pub(crate) struct VideoBlock {
     pub bytes: Vec<u8>,
     pub timestamp: u64,
+    pub shared: Option<Arc<dyn SharedVideoFrame>>,
 }
 
 pub(crate) struct VideoInput {
@@ -39,6 +48,7 @@ pub(crate) struct VideoInput {
     writer: AtomicBool,
     reader: AtomicBool,
     pub active: AtomicBool,
+    pub shared_frames: AtomicBool,
     pub dropped: AtomicU64,
     pub oversized: AtomicBool,
     capacity: usize,
@@ -60,6 +70,10 @@ impl std::ops::Deref for VideoRead<'_> {
 }
 impl Drop for VideoRead<'_> {
     fn drop(&mut self) {
+        // Release capture storage before publishing the reusable queue position.
+        unsafe {
+            (*self.input.slots[self.position as usize % 3].get()).shared = None;
+        }
         self.input
             .read
             .store(self.position.wrapping_add(1), Ordering::Release);
@@ -79,6 +93,7 @@ impl VideoInput {
             slots.push(UnsafeCell::new(VideoBlock {
                 bytes,
                 timestamp: 0,
+                shared: None,
             }));
         }
         Ok(Arc::new(Self {
@@ -88,6 +103,7 @@ impl VideoInput {
             writer: AtomicBool::new(false),
             reader: AtomicBool::new(false),
             active: AtomicBool::new(true),
+            shared_frames: AtomicBool::new(false),
             dropped: AtomicU64::new(0),
             oversized: AtomicBool::new(false),
             capacity,
@@ -116,6 +132,33 @@ impl VideoInput {
         slot.bytes.clear();
         slot.bytes.extend_from_slice(source);
         slot.bytes.resize(source.len() + 64, 0);
+        slot.timestamp = timestamp;
+        self.write.store(write.wrapping_add(1), Ordering::Release);
+        self.signal.notify();
+    }
+    fn submit_shared(&self, frame: Arc<dyn SharedVideoFrame>, timestamp: u64) {
+        if !self.shared_frames.load(Ordering::Acquire) {
+            self.submit(frame.bytes(), timestamp);
+            return;
+        }
+        if !self.active.load(Ordering::Acquire) {
+            return;
+        }
+        if frame.bytes().len().saturating_add(64) > self.capacity {
+            self.oversized.store(true, Ordering::Release);
+            return;
+        }
+        let Some(_guard) = CallbackGuard::enter(&self.writer) else {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        let write = self.write.load(Ordering::Relaxed);
+        if write.wrapping_sub(self.read.load(Ordering::Acquire)) >= 3 {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let slot = unsafe { &mut *self.slots[write as usize % 3].get() };
+        slot.shared = Some(frame);
         slot.timestamp = timestamp;
         self.write.store(write.wrapping_add(1), Ordering::Release);
         self.signal.notify();
@@ -163,6 +206,19 @@ impl VideoTap {
                 .ok()
                 .and_then(|value| value.upgrade())
                 .is_some_and(|input| input.active.load(Ordering::Acquire))
+    }
+    pub fn submit_shared(&self, frame: Arc<dyn SharedVideoFrame>, timestamp: u64) {
+        if !self.enabled.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(input) = self
+            .target
+            .try_lock()
+            .ok()
+            .and_then(|value| value.upgrade())
+        {
+            input.submit_shared(frame, timestamp);
+        }
     }
     pub fn submit(&self, bytes: &[u8], timestamp: u64) {
         if !self.enabled.load(Ordering::Acquire) {

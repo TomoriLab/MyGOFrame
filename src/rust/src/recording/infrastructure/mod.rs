@@ -1,6 +1,8 @@
 mod codec;
+mod cuda_host;
 mod decoder;
 mod devices;
+mod vulkan_upload;
 use crate::media::infrastructure::packets as input;
 mod muxer;
 mod runtime;
@@ -27,6 +29,7 @@ struct Status {
     error: Mutex<String>,
     adapter: Mutex<String>,
     decoder: Mutex<String>,
+    transfer: Mutex<String>,
 }
 struct Recording {
     status: Arc<Status>,
@@ -87,6 +90,7 @@ fn run(
         (device, encoder)
     };
     *status.adapter.lock().unwrap() = device.name.clone();
+    *status.transfer.lock().unwrap() = encoder.transfer_name().to_owned();
     *status.decoder.lock().unwrap() = encoder.decoder_name().to_owned();
     let mut sound = if audio.is_some() {
         Some(AudioEncoder::new()?)
@@ -116,6 +120,9 @@ fn run(
         }
     }
     let _audio_guard = ActiveAudio(audio.clone());
+    video
+        .shared_frames
+        .store(encoder.experimental(), Ordering::Release);
     if let Err(error) = tap.attach(&video) {
         output.cancel()?;
         return Err(error);
@@ -150,8 +157,13 @@ fn run(
                             (*encoder.context.0).time_base,
                         )
                     };
-                    let submitted = encoder.submit(&block.bytes, pts);
+                    let submitted = if let Some(shared) = &block.shared {
+                        encoder.submit_shared(shared, pts)
+                    } else {
+                        encoder.submit(&block.bytes, pts)
+                    };
                     *status.decoder.lock().unwrap() = encoder.decoder_name().to_owned();
+                    *status.transfer.lock().unwrap() = encoder.transfer_name().to_owned();
                     video.recycle(block);
                     if submitted? {
                         status.frames.fetch_add(1, Ordering::Relaxed);
@@ -354,6 +366,7 @@ pub unsafe extern "C" fn mgfr_recording_create(
             error: Mutex::new(String::new()),
             adapter: Mutex::new(String::new()),
             decoder: Mutex::new(String::new()),
+            transfer: Mutex::new(String::new()),
         });
         let worker_status = Arc::clone(&status);
         let worker_input = Arc::clone(&input);
@@ -433,7 +446,7 @@ pub unsafe extern "C" fn mgfr_recording_status_json(recording: *mut c_void) -> *
         "cancelled",
     ][status.phase.load(Ordering::Acquire).clamp(0, 5) as usize];
     make_c_string(format!(
-        "{{\"phase\":{},\"frames\":{},\"droppedFrames\":{},\"bytes\":{},\"durationNanoseconds\":{},\"error\":{},\"path\":{},\"gpu\":{},\"codec\":{},\"decoder\":{},\"transfer\":\"CPU staging to hardware encoder\"}}",
+        "{{\"phase\":{},\"frames\":{},\"droppedFrames\":{},\"bytes\":{},\"durationNanoseconds\":{},\"error\":{},\"path\":{},\"gpu\":{},\"codec\":{},\"decoder\":{},\"transfer\":{}}}",
         json_string(phase),
         status.frames.load(Ordering::Relaxed),
         status.dropped.load(Ordering::Relaxed),
@@ -443,7 +456,8 @@ pub unsafe extern "C" fn mgfr_recording_status_json(recording: *mut c_void) -> *
         json_string(&value.config.path),
         json_string(&status.adapter.lock().unwrap()),
         json_string(["h264", "hevc", "av1"][value.config.codec as usize]),
-        json_string(&status.decoder.lock().unwrap())
+        json_string(&status.decoder.lock().unwrap()),
+        json_string(&status.transfer.lock().unwrap())
     ))
 }
 
@@ -481,7 +495,7 @@ pub extern "C" fn mgfr_recording_devices_json() -> *mut c_char {
                 .into(),
                 color_range: 0,
             };
-            match VideoEncoder::new(&config, &device) {
+            match VideoEncoder::probe(&config, &device) {
                 Ok(_) => codecs.push(json_string(["h264", "hevc", "av1"][codec as usize])),
                 Err(error) => failures.push(format!(
                     "{}: {error}",
@@ -501,9 +515,6 @@ pub extern "C" fn mgfr_recording_devices_json() -> *mut c_char {
     }
     make_c_string(format!("[{}]", devices.join(",")))
 }
-
-#[cfg(test)]
-mod tests;
 
 impl From<ffi::mgfr_video_info> for VideoFormat {
     fn from(value: ffi::mgfr_video_info) -> Self {

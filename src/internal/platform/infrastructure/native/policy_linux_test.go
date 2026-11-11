@@ -535,3 +535,39 @@ func TestEmptyLoaderComponentHonorsCurrentDirectory(test *testing.T) {
 		test.Fatalf("current-directory GTK resolution = %q, %v", actual, err)
 	}
 }
+
+func TestEventDrivenPaintCapabilityFollowsVerifiedRuntime(test *testing.T) {
+	value := runtimeFixture(test)
+	first, err := plan(value.config)
+	if err != nil || first == nil || environmentValues(first.Environment)[eventPaintVariable] != "" {
+		test.Fatalf("an older runtime enabled opaque event-driven paints: %v, %v", first, err)
+	}
+	value.metadata.Features = map[string]bool{"eventDrivenPaint": true}
+	value.write(test)
+	value.config.Environment = first.Environment
+	selected, err := plan(value.config)
+	if err != nil || selected == nil || environmentValues(selected.Environment)[eventPaintVariable] != "1" {
+		test.Fatalf("verified event-driven paint activation failed: %v, %v", selected, err)
+	}
+	value.config.Environment = selected.Environment
+	if repeated, err := plan(value.config); err != nil || repeated != nil {
+		test.Fatalf("event-driven paints caused repeated execution: %v, %v", repeated, err)
+	}
+	value.config.Environment = replaceVariable(selected.Environment, eventPaintVariable, "0", false)
+	overridden, err := plan(value.config)
+	if err != nil || overridden == nil || environmentValues(overridden.Environment)[eventPaintVariable] != "0" || environmentValues(overridden.Environment)[eventPaintActiveVariable] != "" {
+		test.Fatalf("an inherited capability overrode the caller's selection: %v, %v", overridden, err)
+	}
+	value.config.Environment = selected.Environment
+	value.metadata.Features = nil
+	value.write(test)
+	retired, err := plan(value.config)
+	if err != nil || retired == nil || environmentValues(retired.Environment)[eventPaintVariable] != "" {
+		test.Fatalf("runtime downgrade retained its paint capability: %v, %v", retired, err)
+	}
+	value.config.Environment = append(selected.Environment, modeVariable+"=system")
+	system, err := plan(value.config)
+	if err != nil || system == nil || environmentValues(system.Environment)[eventPaintVariable] != "" || environmentValues(system.Environment)[eventPaintActiveVariable] != "" {
+		test.Fatalf("system selection retained managed event-driven paints: %v, %v", system, err)
+	}
+}

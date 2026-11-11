@@ -10,7 +10,7 @@ MYGO_GO := GO="$(GO)" python3 tools/go-mygoframe.py
 MYGO_TEXT_OWNERSHIP_TESTS := ^Test(NativeFontsShutdownOwnsEachReference|NativeFontsConcurrentLateCleanup|NativeFontsNormalRetirementBeforeShutdown|ShutdownSerializesPreloadAndStaysClosed|ShutdownWithoutNativeEngine|PangoContextFailureReleasesFontMap|PangoCairoErrorFontIsDestroyed|PangoShutdownReleasesOnlyOwnedResourcesOnce)$$
 MYGO_VARIANT_OWNERSHIP_TESTS := ^TestVariant(ReplyTypeSurvivesSyncCallAndIsReleased|ReplyTypeReleasedOnCallError|PortalSettingsReleasesElementAndReplyTypes|PortalLookupReleasesTypeOnMissingValue|NotificationTypesAndNoUnusedEmptyArray|ShowItemReleasesReply|BusErrorConsumesOnlyFloatingParameters)$$
 MYGO_NATIVE_SHUTDOWN_TESTS := ^TestNativeShutdown(ClosesDisplayOnceAfterClearingContext|RejectsActiveOwners|WithoutDisplayDoesNotInitializeGraphics|WithoutGTKDoesNotLoadLibraries|DisconnectsOwnedSignalsBeforeDisplayClose|BalancesFailedAndMissingSignalOwners|ReportsFontconfigFailure)$$
-MYGO_PRESENTATION_TESTS := ^TestGLFrame(TextureSelection|RequestsCoalesceBeforePaint)$$
+MYGO_PRESENTATION_TESTS := ^TestGLFrame(TextureSelection|RequestsCoalesceBeforePaint|EventDrivenRequests)$$
 RUST_TARGET_DIR := $(CURDIR)/build/rust-target
 AUDIO_SOURCE ?=
 export AUDIO_SOURCE
@@ -146,7 +146,7 @@ test-sanitize: build/video-sanitize build/audio-sanitize build/session-sanitize
 	ASAN_OPTIONS='detect_leaks=1:halt_on_error=1' LSAN_OPTIONS='exitcode=23:report_objects=1' ./build/session-sanitize
 	./build/video-sanitize
 	./build/audio-sanitize
-	$(RUST_ASAN) $(CARGO) test --manifest-path src/rust/Cargo.toml --offline --lib
+	$(RUST_ASAN) $(CARGO) test --manifest-path src/rust/Cargo.toml --offline --lib --tests
 
 test-egl-integration:
 	python3 tools/validate-egl-lifecycle.py --output build/egl-lifecycle.json

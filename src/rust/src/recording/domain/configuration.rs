@@ -69,3 +69,6 @@ impl Configuration {
             .ok_or_else(|| "Recording capacity overflowed.".into())
     }
 }
+
+#[cfg(test)]
+mod tests;

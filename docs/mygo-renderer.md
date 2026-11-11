@@ -1,6 +1,6 @@
 # MyGo renderer patch
 
-The application depends on the official `github.com/egoist/mygo v0.8.1` module. The patches add opt-in external images, GPU-ready observation, graphics-context cleanup, explicit GLES selection for DMA-BUF presentation, and native text/GLib ownership fixes.
+The application depends on the official `github.com/egoist/mygo v0.8.1` module. The patches add opt-in external images, GPU-ready observation, graphics-context cleanup, explicit GLES selection for DMA-BUF presentation, native text/GLib ownership fixes, and capability-gated event-driven paint requests.
 
 `tools/prepare-mygo.py` applies the patch only inside the ignored build directory using Python 3 and GNU `patch`. It rejects another MyGo version or a module replacement. The checked-in `go.mod` and module cache remain unchanged. No dependency source tree is tracked in this repository or copied into `third_party/`.
 
@@ -19,3 +19,5 @@ Update the patch and its tests before changing MyGo versions. The upstream depen
 `ui.ShutdownText()` performs terminal cleanup of the shared native text engine after the application event loop and application cleanup finish. It preserves exactly-once font-reference ownership across pending runtime cleanups. Focused ownership tests run through `make test` and `make test-race`, including the sparse Debian vendor overlay. See [Native text ownership](font-memory.md) for the shutdown contract and terminal release of the Fontconfig current-configuration reference.
 
 GLES GL areas use texture attachments even for opaque native windows. GTK 3.24.52 checks only `GL_ANGLE_framebuffer_blit` for GLES renderbuffer blits and otherwise reads the complete renderbuffer to a Cairo image on the CPU. Its texture composition path avoids that readback. Window transparency remains controlled by the original window options. See [GUI presentation](gui-presentation.md) for the reproduction and timing boundary.
+
+The event-driven paint patch is paired with `features.eventDrivenPaint` in the verified private GDK runtime. Older bundles retain update-callback scheduling. See [native GUI presentation](gui-presentation.md) for the scheduling guards and recreation regression.

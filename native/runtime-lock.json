@@ -1,6 +1,7 @@
 {
   "features": {
-    "glesOpaqueTexture": true
+    "glesOpaqueTexture": true,
+    "eventDrivenPaint": true
   },
   "gtkModuleBuild": {
     "patches": [
@@ -121,6 +122,10 @@
         {
           "file": "native/patches/gtk-3.24.52-gles-opaque-texture.patch",
           "sha256": "f41143f0653597f618581e333dd036d4adb974bcb25819980b3a904906c2a8fb"
+        },
+        {
+          "file": "native/patches/gdk-3.24.52-event-driven-paint.patch",
+          "sha256": "bb6f06903cc41a41159171d7ad4926c0fee31648c279fd9bf1a193bfcacf5bf6"
         }
       ],
       "soname": "libgdk-3.so.0",

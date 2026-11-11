@@ -309,6 +309,23 @@ impl DmaFrame {
     }
 }
 
+impl crate::media::infrastructure::packets::SharedVideoFrame for DmaFrame {
+    fn bytes(&self) -> &[u8] {
+        // The frame lease prevents QBUF until all readers have completed.
+        unsafe { std::slice::from_raw_parts(self.storage._mapping.pointer, self.byte_length) }
+    }
+    fn descriptor(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd;
+        self.storage.descriptor.as_fd()
+    }
+    fn allocation_size(&self) -> usize {
+        self.storage._mapping.length
+    }
+    fn prepare_gpu_read(&self) -> Result<(), String> {
+        self.ensure_gpu_visibility().map(|_| ())
+    }
+}
+
 impl Drop for DmaFrame {
     fn drop(&mut self) {
         if let Some(queue) = self.returns.upgrade() {
@@ -781,27 +798,17 @@ impl DmaCapture {
             }
             self.consecutive_invalid_frames = 0;
             if let Some(previous) = latest.replace(buffer) {
-                self.record_buffer(&previous, &status.recording);
-                self.requeue(previous.index)?;
+                if status.recording.is_active() {
+                    let frame = self.publish(previous, 0);
+                    let timestamp = frame.timestamp_ns;
+                    status.recording.submit_shared(frame, timestamp);
+                } else {
+                    self.requeue(previous.index)?;
+                }
                 status.dropped_frames.fetch_add(1, Ordering::Relaxed);
             }
         }
         Ok(latest)
-    }
-
-    fn record_buffer(
-        &self,
-        buffer: &ffi::v4l2_buffer,
-        recording: &crate::media::infrastructure::packets::VideoTap,
-    ) {
-        let storage = &self.slots[buffer.index as usize];
-        // Only the capture worker requeues slots, so this dequeued mapping remains immutable.
-        let bytes =
-            unsafe { std::slice::from_raw_parts(storage._mapping.pointer, self.required_bytes) };
-        recording.submit(
-            bytes,
-            crate::media::infrastructure::packets::video_timestamp(buffer),
-        );
     }
 
     fn publish(&self, buffer: ffi::v4l2_buffer, sequence: u64) -> Arc<DmaFrame> {
@@ -854,10 +861,9 @@ fn capture_worker(mut capture: DmaCapture, pool: Arc<DmaPool>, status: Arc<DmaSt
                 drop(previous);
                 status.frames.fetch_add(1, Ordering::Relaxed);
                 status.notification.notify();
-                // The local lease pins the source even if both windows release their preview.
-                // Publishing first keeps the bounded recording copy off the UI wakeup path.
-                capture.record_buffer(&buffer, &status.recording);
-                drop(frame);
+                // The bounded transport retains the same lease for experimental GPU uploads.
+                let timestamp = frame.timestamp_ns;
+                status.recording.submit_shared(frame, timestamp);
             }
             Ok(None) => {}
             Err(error) => {
@@ -1393,6 +1399,41 @@ mod tests {
         assert!(recorded.bytes[..page].iter().all(|value| *value == 0xa5));
         assert!(recorded.bytes[page..].iter().all(|value| *value == 0));
         assert_eq!(input.dropped.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn shared_recording_lease_survives_preview_and_releases_on_consumption() {
+        let page = 4096;
+        let allocation =
+            unsafe { ffi::mmap(ptr::null_mut(), page, 3, 2 | 0x20, -1, 0) }.cast::<u8>();
+        assert_ne!(allocation as isize, -1);
+        let queue = Arc::new(ReturnQueue::new());
+        let mut frame = frame_with_sender(start_reaper().unwrap(), &queue);
+        let value = Arc::get_mut(&mut frame).unwrap();
+        value.byte_length = page;
+        Arc::get_mut(&mut value.storage).unwrap()._mapping = MappedBuffer {
+            pointer: allocation,
+            length: page,
+        };
+        unsafe {
+            ptr::write_bytes(allocation, 0x5a, page);
+        }
+        let storage = Arc::downgrade(&frame.storage);
+        let input = crate::media::infrastructure::packets::VideoInput::new(page + 64).unwrap();
+        input.shared_frames.store(true, Ordering::Release);
+        let tap = crate::media::infrastructure::packets::VideoTap::default();
+        tap.attach(&input).unwrap();
+        tap.submit_shared(frame, 42);
+        assert!(queue.returned.lock().unwrap().is_empty());
+        let block = input.take().unwrap();
+        assert_eq!(block.timestamp, 42);
+        assert!(block.bytes.is_empty());
+        let shared = block.shared.as_ref().unwrap();
+        assert_eq!(shared.bytes().as_ptr(), allocation);
+        assert!(shared.bytes().iter().all(|value| *value == 0x5a));
+        drop(block);
+        assert!(storage.upgrade().is_none());
+        assert_eq!(*queue.returned.lock().unwrap(), [2]);
     }
 
     #[test]

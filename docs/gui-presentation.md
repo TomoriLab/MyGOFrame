@@ -10,13 +10,15 @@ The private GTK patch uses an RGB8 texture for an opaque GLES area and retains R
 
 The verified runtime manifest advertises `features.glesOpaqueTexture`, which enables `MYGO_GL_GLES_OPAQUE_TEXTURE=1` before GTK initialization. MyGo then requests no alpha for opaque GLES windows. Older private bundles and system libraries retain the RGBA texture workaround. Native transparency still follows `WindowOptions.Transparent`; desktop OpenGL keeps its existing attachment policy. The [GtkGLArea alpha property](https://docs.gtk.org/gtk3/method.GLArea.set_has_alpha.html) controls attachment components rather than native window transparency. Set `MYGO_GL_GLES_OPAQUE_TEXTURE=0` to compare the previous RGBA composition path with the same runtime.
 
-An opaque-renderbuffer blit candidate reduced CPU time but caused intermittent missed presentations in single-window NV12 controls. The final implementation retains texture composition for both windows and the existing frame-request schedule. It adds no continuous redraw loop, frame queue, or per-window composition exception.
+An opaque-renderbuffer blit candidate reduced CPU time but caused intermittent missed presentations in single-window NV12 controls. The final implementation retains texture composition for both windows and bounded frame requests. It adds no continuous redraw loop, frame queue, or per-window composition exception.
 
 ## Frame requests
 
-Each GL surface coalesces invalidations into its own GTK update callback. Requests made during rendering remain deferred until a later update because GtkGLArea clears its render request after emitting its render signal.
+The verified private runtime advertises `features.eventDrivenPaint` and enables `MYGO_GDK_EVENT_DRIVEN_PAINT=1` before GTK initialization. External GL invalidations queue native damage directly. GDK retires its independent smoothed-refresh deadline for these requests when no animation update or backend freeze is active and no paint callback is executing. Pending flush and paint sources are rescheduled through the existing priority and lifetime rules. The display refresh interval remains unchanged.
 
-The callback stays registered while requests continue. The first update with no work removes it without repainting. Separate `renderPending` and `renderRequested` state prevents duplicate registrations, avoids restarting the frame clock for every video frame, and allows idle or closed windows to stop updating. GTK retains widget tick callbacks across unrealize; the scheduling state follows that lifetime. The public [tick callback contract](https://docs.gtk.org/gtk3/method.Widget.add_tick_callback.html) runs updates before frames and does not itself require a repaint.
+This avoids sampling a 60 Hz capture stream through an unrelated 60 Hz paint timer. Window recreation changes the relative phase of those clocks and previously reduced distinct-frame submission to 44–54 fps. Requests made during rendering still use a deferred GTK update because GtkGLArea clears its render request after emitting its render signal. Animation updates and backend throttling retain normal scheduling.
+
+Older bundles and system libraries retain the coalesced update callback. `MYGO_GDK_EVENT_DRIVEN_PAINT=0` explicitly selects that path for comparison. Runtime capability tests cover activation, explicit overrides, downgrade cleanup, and system-library cleanup. Deferred callbacks stop when idle or closed; external damage adds no persistent timer.
 
 This preserves bounded latest-frame presentation. It does not queue captured frames to force an apparent frame rate, change GPU fence release order, or claim that every incoming frame reaches physical scanout.
 

@@ -49,6 +49,28 @@ fn main() {
         "bindgen failed to generate native bindings"
     );
 
+    // Integration tests bind only the public ABI rather than exposing implementation modules.
+    let public_bindings =
+        PathBuf::from(env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join("public_api.rs");
+    let status = Command::new("bindgen")
+        .arg("../abi/rust_core.h")
+        .arg("--output")
+        .arg(public_bindings)
+        .args([
+            "--allowlist-function",
+            "^mgfr_.*",
+            "--allowlist-type",
+            "^mgfr_.*",
+            "--no-layout-tests",
+            "--no-doc-comments",
+        ])
+        .status()
+        .expect("bindgen must be installed");
+    assert!(
+        status.success(),
+        "bindgen failed to generate public API test bindings"
+    );
+
     for library in [
         "pipewire-0.3",
         "avcodec",

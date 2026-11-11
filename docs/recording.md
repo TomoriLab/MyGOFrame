@@ -20,7 +20,7 @@ The GPU catalog opens each encoder for a baseline configuration. Actual selected
 
 ## Buffer and file ownership
 
-The DMA capture worker publishes and notifies the latest preview frame before copying it into recording-owned storage. A local frame lease prevents source-slot reuse until that copy finishes, including when both preview windows release the frame first. Superseded dequeued frames are copied before requeue, so latest-frame preview discard does not discard recording input. The CPU fallback still copies raw data before conversion and requeue. Three preallocated recording video slots have a combined maximum capacity of 384 MiB. Slot leases prevent reuse until the recorder finishes reading. Recording retains no V4L2 or GPU preview lease through encoding. The initial path converts in recorder-owned CPU staging and uploads to the selected hardware encoder. Existing preview GPU fences remain responsible for preview readers.
+The default DMA capture worker publishes and notifies the latest preview frame before copying it into recording-owned storage. A local frame lease prevents source-slot reuse until that copy finishes, including when both preview windows release the frame first. Superseded dequeued frames are copied before requeue, so latest-frame preview discard does not discard recording input. The CPU fallback still copies raw data before conversion and requeue. Three preallocated recording video slots have a combined maximum capacity of 384 MiB. Slot leases prevent reuse until the recorder finishes reading. Recording retains no V4L2 or GPU preview lease through encoding. The initial path converts in recorder-owned CPU staging and uploads to the selected hardware encoder. Existing preview GPU fences remain responsible for preview readers.
 
 The recording audio queue contains 64 fixed slots of up to 2048 stereo frames. Separate producer and consumer gates enforce exclusive access. Realtime input only copies samples and signals an eventfd; codec calls and file IO run on the recording worker. Audio overflow, sustained video overload, and missing input fail the recording explicitly. Queues do not grow to absorb a stalled disk or encoder.
 
@@ -61,15 +61,26 @@ The steady submission interval uses capture timestamps from seconds five through
 
 The updated source passed Rust ASan and DMA/media TSan checks. A separate native two-window ASan/LSan run recorded HEVC and AV1 with AAC, recreated the capture window, resized and entered fullscreen, retargeted muted monitoring, stopped and restarted recording, and finalized on capture stop. All thirteen checkpoints passed without a sanitizer or GLib report. Separate device checks verified all three codecs, sampled color conversion, and forced CPU fallback.
 
-Run the normal suites with `make test`, `make test-race`, `make test-sanitize`, and `make test-thread-sanitize`. Hardware conversion tests additionally require a 1280 × 720 JPEG fixture and an empty output directory:
+Run the normal suites with `make test`, `make test-race`, `make test-sanitize`, and `make test-thread-sanitize`. Configuration validation lives beside the recording domain. Encoder timing, audio drift, and internal GPU-state checks live beside the codec implementation. Hardware-dependent white-box probe, upload, and input-conversion tests remain ignored unit tests because their assertions require private state. The conversion test preserves all seven raw/MJPEG formats across the three codecs, drains encoder packets without opening output files, and accepts a 1280 × 720 JPEG through `ENCODER_TEST_JPEG`.
+
+`src/rust/tests/recording.rs` is a separate integration-test crate. It binds only `src/abi/rust_core.h` and exercises public capture creation, negotiated metadata, recording startup, status, stop, and destruction. Capture and recording owners enforce teardown order even on assertion failure. Python's standard JSON parser and FFmpeg tools validate completed files; no Cargo dependencies or production visibility changes are required.
+
+Hardware recording checks require an exclusive capture device, a supported 60 fps mode, and unused output paths:
 
 ```sh
-RECORDING_TEST_OUTPUT=/absolute/empty-output-directory \
-RECORDING_TEST_JPEG=/absolute/1280x720-baseline-jpeg \
+RECORDING_TEST_DEVICE=/dev/video0 \
+RECORDING_TEST_OUTPUT=/absolute/unused-output-directory \
+RECORDING_TEST_FORMAT=NV12 \
+RECORDING_TEST_WIDTH=3840 RECORDING_TEST_HEIGHT=2160 \
+RECORDING_TEST_BACKEND=dma \
+MYGOFRAME_EXPERIMENTAL_RECORDING_TRANSFER=vulkan \
 CARGO_TARGET_DIR=build/rust-target \
-cargo test --manifest-path src/rust/Cargo.toml \
-  recording::infrastructure::tests::hardware_raw_and_mjpeg_recording -- \
-  --ignored --exact --nocapture --test-threads=1
+cargo test --manifest-path src/rust/Cargo.toml --offline --test recording \
+  hardware_recording_through_public_api -- --ignored --exact --nocapture --test-threads=1
 ```
 
-Use a 4:2:0 JPEG to exercise NVDEC and 4:2:2 to exercise software fallback. Set `RECORDING_TEST_GPU` to a catalog ID for an explicit device. Test-only Rust standard-library dependencies used for TSan do not change production Cargo dependencies. Debian build dependencies include libavformat-dev and libswresample-dev; runtime dependencies are derived from linked libraries.
+The test defaults to NV12 1280 × 720 at 60 fps through the CPU capture API and exercises H.264, HEVC, and AV1 sequentially. Set `RECORDING_TEST_CODEC=0`, `1`, or `2` to select one codec and `RECORDING_TEST_GPU` to select a public GPU catalog ID. Other raw formats and MJPG require support from the actual capture device; synthetic JPEG injection is no longer used by this end-to-end test. A requested unsupported mode fails instead of silently skipping coverage. Vulkan selection must report an actual Vulkan transfer path. Hardware tests remain ignored in normal and sanitizer suites; the non-hardware public-API rejection test runs by default.
+
+The direct Rust integration executable does not run Go's graphics startup policy. On the tested NVIDIA 615.78.08 driver, set `__GL_DisableDBus=1` before launching a hardware sanitizer test, matching the application's existing [NVIDIA compatibility policy](egl-leaks.md). Do not suppress the resulting driver reports or apply this version-specific setting to unverified drivers automatically.
+
+The opt-in [CUDA and Vulkan recording transfer experiment](recording-gpu-transfer.md) retains capture leases through GPU upload and selects direct DMA-BUF import only when the actual allocation is accepted. The default path described above remains unchanged.

@@ -1,0 +1,63 @@
+--- a/internal/linux/surface.go
++++ b/internal/linux/surface.go
+@@ -455,9 +455,13 @@
+ 		// within it is lost: ask at the next tick instead.
+ 		s.renderAgain = true
+ 	case s.drawsGL():
+-		// Queue damage in the update phase so separate frame clocks consume
+-		// coalesced requests before painting rather than starting damage-only cycles.
+-		s.queueRenderLater()
++		if os.Getenv("MYGO_GDK_EVENT_DRIVEN_PAINT") == "1" {
++			// The private GDK runtime admits external damage without a second refresh timer.
++			// GTK still coalesces damage, and render-signal requests remain deferred above.
++			s.queueDraw()
++		} else {
++			s.queueRenderLater()
++		}
+ 	default:
+ 		s.again = true
+ 		if s.tick == 0 {
+--- a/internal/linux/presentation_schedule_test.go
++++ b/internal/linux/presentation_schedule_test.go
+@@ -63,3 +63,41 @@
+ 		t.Fatal("request during rendering was not deferred")
+ 	}
+ }
++
++func TestGLFrameEventDrivenRequests(t *testing.T) {
++	t.Setenv("MYGO_GDK_EVENT_DRIVEN_PAINT", "1")
++	previousError, previousTick, previousQueue := gtkGLAreaGetError, gtkWidgetAddTickCallback, gtkGLAreaQueueRender
++	t.Cleanup(func() {
++		gtkGLAreaGetError, gtkWidgetAddTickCallback, gtkGLAreaQueueRender = previousError, previousTick, previousQueue
++	})
++	gtkGLAreaGetError = func(ptr) ptr { return 0 }
++	var ticks, draws int
++	gtkWidgetAddTickCallback = func(widget, callback, data, notify ptr) uint32 { ticks++; return uint32(ticks) }
++	gtkGLAreaQueueRender = func(ptr) { draws++ }
++	surface := &surface{w: &window{id: 1}, gl: true, drawn: true}
++	for range 4 {
++		surface.RequestFrame()
++	}
++	if ticks != 0 || draws != 4 {
++		t.Fatal("external frames started a competing update clock")
++	}
++	surface.rendering = true
++	surface.RequestFrame()
++	surface.RequestFrame()
++	if !surface.renderAgain || ticks != 0 || draws != 4 {
++		t.Fatal("render-signal request was not retained for later")
++	}
++	surface.rendering, surface.renderAgain = false, false
++	surface.queueRenderLater()
++	if ticks != 1 || !surface.renderQueuedFrame() || draws != 5 {
++		t.Fatal("deferred request was lost")
++	}
++	if surface.renderQueuedFrame() || surface.renderPending {
++		t.Fatal("idle surface retained its update source")
++	}
++	surface.w.closed = true
++	surface.RequestFrame()
++	if ticks != 1 || draws != 5 {
++		t.Fatal("closed surface scheduled native work")
++	}
++}
